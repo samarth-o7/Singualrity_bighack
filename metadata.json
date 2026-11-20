@@ -1,0 +1,6 @@
+{
+  "name": "Pravah Credit — MSME Cash-Flow Underwriting Demo",
+  "description": "Interactive synthetic-data credit underwriting prototype for Problem F2 (Credit for the credit-invisible), evaluating Indian MSMEs via cash-flow stability, UPI footprint, and repayment consistency.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

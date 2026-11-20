@@ -1,0 +1,68 @@
+import { MSMEPreset } from '../types/credit';
+
+export const MSME_PRESETS: MSMEPreset[] = [
+  {
+    id: 'kirana',
+    label: 'Kirana store',
+    businessName: 'Shree Ganesh Kirana & Daily Needs',
+    location: 'Pune, Maharashtra',
+    sectorNote: 'High daily footfall · steady essentials turnover',
+    inputs: {
+      dailySales: 6500,
+      operatingDaysPerWeek: 7,
+      upiShare: 68,
+      cashFlowFluctuation: 'Low',
+      paymentConsistency: 88,
+      monthlyFixedExpenses: 42000,
+      requestedLoan: 120000,
+    },
+  },
+  {
+    id: 'tailor',
+    label: 'Tailor',
+    businessName: 'Meera Boutique & Ladies Tailoring',
+    location: 'Jaipur, Rajasthan',
+    sectorNote: 'Festival peaks · repeat neighbourhood clientele',
+    inputs: {
+      dailySales: 2400,
+      operatingDaysPerWeek: 6,
+      upiShare: 46,
+      cashFlowFluctuation: 'Medium',
+      paymentConsistency: 82,
+      monthlyFixedExpenses: 18500,
+      requestedLoan: 50000,
+    },
+  },
+  {
+    id: 'repair',
+    label: 'Repair shop',
+    businessName: 'Raju Two-Wheeler & Electrical Works',
+    location: 'Nagpur, Maharashtra',
+    sectorNote: 'Variable job tickets · parts & labour mix',
+    inputs: {
+      dailySales: 3800,
+      operatingDaysPerWeek: 6,
+      upiShare: 54,
+      cashFlowFluctuation: 'High',
+      paymentConsistency: 72,
+      monthlyFixedExpenses: 29000,
+      requestedLoan: 85000,
+    },
+  },
+  {
+    id: 'women-enterprise',
+    label: 'Women-led micro-enterprise',
+    businessName: 'Savitri Papad & Spice Collective',
+    location: 'Nashik, Maharashtra',
+    sectorNote: 'Batch wholesale orders · disciplined group savings',
+    inputs: {
+      dailySales: 4200,
+      operatingDaysPerWeek: 5,
+      upiShare: 74,
+      cashFlowFluctuation: 'Low',
+      paymentConsistency: 93,
+      monthlyFixedExpenses: 26000,
+      requestedLoan: 95000,
+    },
+  },
+];
