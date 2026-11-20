@@ -1,42 +1,37 @@
-import { StabilityBand } from '../types/credit';
+import { ReadinessTier } from '../types/credit';
 
 interface StabilityGaugeProps {
   score: number;
-  band: StabilityBand;
+  tier: ReadinessTier;
 }
 
-const BAND_STYLES: Record<
-  StabilityBand,
+const TIER_STYLES: Record<
+  ReadinessTier,
   { stroke: string; textClass: string; descriptor: string }
 > = {
   Strong: {
     stroke: '#047857', // emerald-700
     textClass: 'text-emerald-700',
-    descriptor: 'Consistent inflows & healthy repayment headroom',
+    descriptor: 'Consistent cash inflows and comfortable expense coverage',
   },
   Moderate: {
     stroke: '#0f766e', // teal-700
     textClass: 'text-teal-700',
-    descriptor: 'Bankable cash-flow with manageable variability',
+    descriptor: 'Bankable cash-flow rhythm with manageable variability',
   },
-  Cautious: {
+  Watchlist: {
     stroke: '#b45309', // amber-700
     textClass: 'text-amber-700',
-    descriptor: 'Right-sized starter limit advised to limit stress',
-  },
-  Fragile: {
-    stroke: '#b91c1c', // red-700
-    textClass: 'text-red-700',
-    descriptor: 'Thin cash buffer or volatile receipts detected',
+    descriptor: 'Thin surplus cushion or elevated volatility — starter tranche advised',
   },
 };
 
-export function StabilityGauge({ score, band }: StabilityGaugeProps) {
+export function StabilityGauge({ score, tier }: StabilityGaugeProps) {
   const clamped = Math.max(0, Math.min(100, score));
   const radius = 58;
-  const circumference = Math.PI * radius; // Semi-circle arc length
+  const circumference = Math.PI * radius;
   const strokeDashoffset = circumference * (1 - clamped / 100);
-  const style = BAND_STYLES[band];
+  const style = TIER_STYLES[tier];
 
   return (
     <div className="flex flex-col items-center">
@@ -45,9 +40,8 @@ export function StabilityGauge({ score, band }: StabilityGaugeProps) {
           viewBox="0 0 156 94"
           className="h-full w-full overflow-visible"
           role="img"
-          aria-label={`Stability score ${clamped} out of 100, rated ${band}`}
+          aria-label={`Stability score ${clamped} out of 100, readiness tier ${tier}`}
         >
-          {/* Background track arc */}
           <path
             d="M 20 78 A 58 58 0 0 1 136 78"
             fill="none"
@@ -55,7 +49,6 @@ export function StabilityGauge({ score, band }: StabilityGaugeProps) {
             strokeWidth="11"
             strokeLinecap="round"
           />
-          {/* Active progress arc */}
           <path
             d="M 20 78 A 58 58 0 0 1 136 78"
             fill="none"
@@ -78,7 +71,7 @@ export function StabilityGauge({ score, band }: StabilityGaugeProps) {
             </span>
           </div>
           <span className={`text-xs font-semibold ${style.textClass}`}>
-            {band} Stability
+            {tier} Readiness
           </span>
         </div>
       </div>
@@ -86,6 +79,6 @@ export function StabilityGauge({ score, band }: StabilityGaugeProps) {
   );
 }
 
-export function getStabilityDescriptor(band: StabilityBand): string {
-  return BAND_STYLES[band].descriptor;
+export function getReadinessDescriptor(tier: ReadinessTier): string {
+  return TIER_STYLES[tier].descriptor;
 }

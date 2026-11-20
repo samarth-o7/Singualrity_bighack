@@ -13,6 +13,12 @@ const STATUS_TEXT: Record<'Positive' | 'Neutral' | 'Watch', string> = {
   Watch: 'text-amber-700',
 };
 
+const CHECK_STATUS_TEXT: Record<'Passed' | 'Needs Proof' | 'Warning', string> = {
+  Passed: 'text-emerald-700',
+  'Needs Proof': 'text-amber-700',
+  Warning: 'text-red-700',
+};
+
 const SEVERITY_TEXT: Record<'Low' | 'Medium' | 'High', string> = {
   Low: 'text-slate-600',
   Medium: 'text-amber-700',
@@ -21,27 +27,34 @@ const SEVERITY_TEXT: Record<'Low' | 'Medium' | 'High', string> = {
 
 export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProps) {
   const {
-    factors,
+    keySignals,
+    verificationChecks,
+    dataConfidence,
+    verificationStatus,
+    confidenceHaircutMultiplier,
     monthlyRevenue,
+    monthlyFixedExpenses,
     monthlyNetSurplus,
+    expenseCoverageRatio,
+    operatingMarginPercent,
     monthlyRepaymentTotal,
     repaymentToSurplusPercent,
-    operatingMarginPercent,
-    recommendedLoan,
-    lenderRisks,
+    recommendedLoanAmount,
+    riskFlags,
   } = assessment;
 
-  const requestedDelta = recommendedLoan - inputs.requestedLoan;
+  const requestedDelta = recommendedLoanAmount - inputs.requestedLoan;
+  const isDeficit = monthlyNetSurplus < 0;
 
   return (
     <div className="space-y-6">
-      {/* Signal Attribution Table */}
+      {/* 1. Key Underwriting Signals Attribution Table */}
       <div>
         <div className="flex items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-900">
-            Alternative underwriting signals
+            Key underwriting signals
           </h3>
-          <span className="text-xs text-slate-500">No bureau score required</span>
+          <span className="text-xs text-slate-500">Cash-flow weighted model</span>
         </div>
 
         <div className="mt-3 overflow-x-auto">
@@ -55,25 +68,25 @@ export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProp
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">
-              {factors.map((factor) => (
-                <tr key={factor.id} className="align-top">
+              {keySignals.map((signal) => (
+                <tr key={signal.id} className="align-top">
                   <td className="py-2.5 pr-3">
-                    <div className="font-medium text-slate-900">{factor.label}</div>
+                    <div className="font-medium text-slate-900">{signal.label}</div>
                     <div className="mt-0.5 text-[11px] text-slate-500">
-                      {isMobileFrame ? `${factor.rawDisplay} · ` : ''}
-                      <span className={STATUS_TEXT[factor.status]}>{factor.status}</span>
+                      {isMobileFrame ? `${signal.rawDisplay} · ` : ''}
+                      <span className={STATUS_TEXT[signal.status]}>{signal.status}</span>
                     </div>
                   </td>
                   {!isMobileFrame && (
                     <td className="py-2.5 px-2 font-mono text-slate-700 tabular-nums whitespace-nowrap">
-                      {factor.rawDisplay}
+                      {signal.rawDisplay}
                     </td>
                   )}
                   <td className="py-2.5 px-2 text-right font-mono text-slate-500 tabular-nums whitespace-nowrap">
-                    {factor.weightPercent}%
+                    {signal.weightPercent}%
                   </td>
                   <td className="py-2.5 pl-2 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
-                    {factor.contribution.toFixed(1)}
+                    {signal.contribution.toFixed(1)}
                   </td>
                 </tr>
               ))}
@@ -82,10 +95,44 @@ export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProp
         </div>
       </div>
 
-      {/* Cash-Flow & FOIR Affordability Diagnostics */}
+      {/* 2. Verification & Data Confidence Cross-Signal Checks */}
+      <div className="border-t border-slate-100 pt-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h4 className="text-xs font-semibold text-slate-900">
+            Cross-signal verification checks
+          </h4>
+          <span className="font-mono text-xs text-slate-600 tabular-nums">
+            Confidence {dataConfidence}/100 · Exposure cap {Math.round(confidenceHaircutMultiplier * 100)}%
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          Status: <strong className="font-semibold text-slate-800">{verificationStatus}</strong>
+        </p>
+
+        <ul className="mt-3 divide-y divide-slate-100">
+          {verificationChecks.map((check) => (
+            <li key={check.id} className="py-2.5 first:pt-0 last:pb-0">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-900">{check.label}</span>
+                <span className="font-mono text-[11px] tabular-nums shrink-0">
+                  <span className={`font-semibold ${CHECK_STATUS_TEXT[check.status]}`}>
+                    {check.status}
+                  </span>
+                  <span className="ml-1.5 text-slate-400">
+                    ({check.confidenceImpact >= 0 ? `+${check.confidenceImpact}` : check.confidenceImpact})
+                  </span>
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-600">{check.detail}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* 3. Cash-Flow & Affordability Diagnostics */}
       <div className="border-t border-slate-100 pt-5">
         <h4 className="text-xs font-semibold text-slate-900">
-          Affordability & cash-flow ratios
+          Cash-flow & affordability ratios
         </h4>
         <dl
           className={`mt-3 grid gap-x-4 gap-y-3 ${
@@ -93,7 +140,7 @@ export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProp
           }`}
         >
           <div>
-            <dt className="text-[11px] text-slate-500">Est. monthly revenue</dt>
+            <dt className="text-[11px] text-slate-500">Monthly revenue</dt>
             <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
               {formatINR(monthlyRevenue)}
             </dd>
@@ -101,19 +148,28 @@ export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProp
           <div>
             <dt className="text-[11px] text-slate-500">Fixed expenses</dt>
             <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-              {formatINR(inputs.monthlyFixedExpenses)}
+              {formatINR(monthlyFixedExpenses)}
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] text-slate-500">Operating margin</dt>
-            <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-              {Math.round(operatingMarginPercent)}%
+            <dt className="text-[11px] text-slate-500">Monthly net surplus</dt>
+            <dd
+              className={`mt-0.5 font-mono text-sm font-semibold tabular-nums ${
+                isDeficit ? 'text-red-700' : 'text-emerald-700'
+              }`}
+            >
+              {isDeficit
+                ? `-${formatINR(Math.abs(monthlyNetSurplus))}`
+                : formatINR(monthlyNetSurplus)}
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] text-slate-500">Net monthly surplus</dt>
+            <dt className="text-[11px] text-slate-500">Expense coverage</dt>
             <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-              {formatINR(monthlyNetSurplus)}
+              {expenseCoverageRatio.toFixed(2)}x{' '}
+              <span className="text-[11px] font-normal text-slate-500">
+                ({Math.round(operatingMarginPercent)}%)
+              </span>
             </dd>
           </div>
           <div>
@@ -134,27 +190,30 @@ export function LenderView({ inputs, assessment, isMobileFrame }: LenderViewProp
             >
               {requestedDelta === 0
                 ? '100% covered'
-                : `${formatINR(requestedDelta)}`}
+                : `-${formatINR(Math.abs(requestedDelta))}`}
             </dd>
           </div>
         </dl>
       </div>
 
-      {/* Risk Flags & Structuring Guardrails */}
+      {/* 4. Risk Flags & Guardrails */}
       <div className="border-t border-slate-100 pt-5">
         <h4 className="text-xs font-semibold text-slate-900">
-          Risk observations & recommended guardrails
+          Risk flags & structuring guardrails
         </h4>
         <ul className="mt-3 divide-y divide-slate-100">
-          {lenderRisks.map((risk) => (
-            <li key={risk.title} className="py-2.5 first:pt-0 last:pb-0">
+          {riskFlags.map((risk) => (
+            <li key={risk.id} className="py-2.5 first:pt-0 last:pb-0">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-xs font-semibold text-slate-900">{risk.title}</span>
-                <span className={`font-mono text-[11px] font-semibold shrink-0 ${SEVERITY_TEXT[risk.severity]}`}>
+                <span
+                  className={`font-mono text-[11px] font-semibold shrink-0 ${SEVERITY_TEXT[risk.severity]}`}
+                >
                   {risk.severity} risk
                 </span>
               </div>
-              <p className="mt-1 text-xs leading-relaxed text-slate-600">
+              <p className="mt-0.5 text-xs text-slate-600">{risk.detail}</p>
+              <p className="mt-1 text-xs font-medium text-slate-700">
                 Guardrail: {risk.mitigant}
               </p>
             </li>

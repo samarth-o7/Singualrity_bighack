@@ -1,8 +1,13 @@
-import { CreditAssessment, MSMEInputs, PerspectiveTab } from '../types/credit';
+import {
+  CreditAssessment,
+  MSMEInputs,
+  PerspectiveTab,
+  VerificationStatus,
+} from '../types/credit';
 import { formatINR } from '../utils/format';
 import { BorrowerView } from './BorrowerView';
 import { LenderView } from './LenderView';
-import { getStabilityDescriptor, StabilityGauge } from './StabilityGauge';
+import { getReadinessDescriptor, StabilityGauge } from './StabilityGauge';
 
 interface OutputPanelProps {
   inputs: MSMEInputs;
@@ -11,6 +16,24 @@ interface OutputPanelProps {
   isMobileFrame: boolean;
   onTabChange: (tab: PerspectiveTab) => void;
 }
+
+const VERIFICATION_STYLES: Record<
+  VerificationStatus,
+  { text: string; bar: string }
+> = {
+  'Partially Corroborated': {
+    text: 'text-emerald-700',
+    bar: 'bg-emerald-600',
+  },
+  'Self-Reported · Needs Proof': {
+    text: 'text-amber-700',
+    bar: 'bg-amber-500',
+  },
+  'Consistency Warning': {
+    text: 'text-red-700',
+    bar: 'bg-red-600',
+  },
+};
 
 export function OutputPanel({
   inputs,
@@ -21,21 +44,23 @@ export function OutputPanel({
 }: OutputPanelProps) {
   const {
     stabilityScore,
-    stabilityBand,
-    recommendedLoan,
+    readinessTier,
+    dataConfidence,
+    verificationStatus,
+    recommendedLoanAmount,
     tenureMonths,
-    repaymentFrequency,
-    interestMinApr,
-    interestMaxApr,
+    repaymentSchedule,
+    indicativeInterestRange,
     underwritingDecision,
     loanCoverageRatio,
   } = assessment;
 
-  const isDeclined = recommendedLoan === 0;
+  const isDeclined = recommendedLoanAmount === 0;
+  const verStyle = VERIFICATION_STYLES[verificationStatus];
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white">
-      {/* Top Hero: Stability Score (0-100) + Decision Summary */}
+      {/* Top Hero: Stability Score (0-100) + Readiness Tier + Data Confidence */}
       <div className="p-5 sm:p-6">
         <div
           className={`flex gap-5 ${
@@ -44,78 +69,102 @@ export function OutputPanel({
               : 'flex-col items-start justify-between sm:flex-row sm:items-center'
           }`}
         >
-          <div className={isMobileFrame ? 'order-2' : 'min-w-0 flex-1'}>
+          <div className={isMobileFrame ? 'order-2 w-full' : 'min-w-0 flex-1'}>
             <p className="text-xs font-medium text-slate-500">
-              Placeholder Stability Score (0–100)
+              Stability Score · Readiness Tier: <span className="font-semibold text-slate-800">{readinessTier}</span>
             </p>
             <h2 className="mt-1 text-lg font-bold tracking-tight text-slate-900">
               {underwritingDecision}
             </h2>
             <p className="mt-1 text-xs leading-relaxed text-slate-600">
-              {getStabilityDescriptor(stabilityBand)}
+              {getReadinessDescriptor(readinessTier)}
             </p>
           </div>
 
           <div className={isMobileFrame ? 'order-1' : 'shrink-0'}>
-            <StabilityGauge score={stabilityScore} band={stabilityBand} />
+            <StabilityGauge score={stabilityScore} tier={readinessTier} />
+          </div>
+        </div>
+
+        {/* Data Confidence & Verification Strip */}
+        <div className="mt-5 border-t border-slate-100 pt-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium text-slate-600">Data Confidence</span>
+              <span className="font-mono font-semibold text-slate-900 tabular-nums">
+                {dataConfidence}/100
+              </span>
+            </div>
+            <span className={`font-semibold ${verStyle.text}`}>
+              {verificationStatus}
+            </span>
+          </div>
+          <div
+            className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100"
+            role="progressbar"
+            aria-valuenow={dataConfidence}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`Data confidence ${dataConfidence} out of 100`}
+          >
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${verStyle.bar}`}
+              style={{ width: `${dataConfidence}%` }}
+            />
           </div>
         </div>
 
         {/* Core 4-Metric Underwriting Output Grid */}
-        <div
-          className={`mt-6 grid gap-px overflow-hidden rounded-lg border border-slate-200 bg-slate-200 ${
-            isMobileFrame ? 'grid-cols-2' : 'grid-cols-2'
-          }`}
-        >
+        <div className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-slate-200 bg-slate-200">
           {/* 1. Recommended Loan Amount */}
           <div className="bg-slate-50/70 p-3.5 sm:p-4">
             <p className="text-xs text-slate-500">Recommended loan</p>
             <p className="mt-1 font-mono text-lg font-bold tracking-tight text-slate-900 tabular-nums sm:text-xl">
-              {isDeclined ? '₹0' : formatINR(recommendedLoan)}
+              {isDeclined ? '₹0' : formatINR(recommendedLoanAmount)}
             </p>
-            <p className="mt-0.5 text-[11px] text-slate-500 font-mono tabular-nums">
+            <p className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
               {isDeclined
                 ? 'Insufficient surplus'
                 : `${Math.round(loanCoverageRatio * 100)}% of ${formatINR(inputs.requestedLoan)}`}
             </p>
           </div>
 
-          {/* 2. Tenure */}
+          {/* 2. Tenure (6-24 months) */}
           <div className="bg-slate-50/70 p-3.5 sm:p-4">
             <p className="text-xs text-slate-500">Tenure</p>
             <p className="mt-1 font-mono text-lg font-bold tracking-tight text-slate-900 tabular-nums sm:text-xl">
               {isDeclined ? '—' : `${tenureMonths} months`}
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500">
-              {isDeclined ? 'Not eligible' : 'Working capital cycle'}
+              {isDeclined ? 'Not eligible' : '6–24 mo MSME band'}
             </p>
           </div>
 
-          {/* 3. Repayment Frequency */}
+          {/* 3. Repayment Schedule */}
           <div className="bg-slate-50/70 p-3.5 sm:p-4">
-            <p className="text-xs text-slate-500">Repayment frequency</p>
+            <p className="text-xs text-slate-500">Repayment schedule</p>
             <p className="mt-1 text-lg font-bold tracking-tight text-slate-900 sm:text-xl">
-              {isDeclined ? '—' : repaymentFrequency}
+              {isDeclined ? '—' : repaymentSchedule}
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500">
               {isDeclined
                 ? 'N/A'
-                : repaymentFrequency === 'Daily'
+                : repaymentSchedule === 'Daily'
                   ? 'UPI micro-sweep'
-                  : 'Auto-debit / UPI'}
+                  : repaymentSchedule === 'Weekly'
+                    ? 'Weekly auto-debit'
+                    : 'Monthly e-NACH'}
             </p>
           </div>
 
           {/* 4. Indicative Interest Range */}
           <div className="bg-slate-50/70 p-3.5 sm:p-4">
-            <p className="text-xs text-slate-500">Indicative interest range</p>
-            <p className="mt-1 font-mono text-lg font-bold tracking-tight text-slate-900 tabular-nums sm:text-xl">
-              {isDeclined
-                ? '—'
-                : `${interestMinApr.toFixed(1)}–${interestMaxApr.toFixed(1)}%`}
+            <p className="text-xs text-slate-500">Indicative interest</p>
+            <p className="mt-1 font-mono text-base font-bold tracking-tight text-slate-900 tabular-nums sm:text-lg">
+              {isDeclined ? '—' : indicativeInterestRange}
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500">
-              {isDeclined ? 'N/A' : 'Indicative APR p.a.'}
+              {isDeclined ? 'N/A' : 'Risk & confidence priced'}
             </p>
           </div>
         </div>
@@ -183,10 +232,10 @@ export function OutputPanel({
         )}
       </div>
 
-      {/* Quiet Placeholder Model Notice */}
+      {/* Deterministic Model Disclaimer */}
       <div className="border-t border-slate-200 bg-slate-50/70 px-5 py-3 text-[11px] leading-relaxed text-slate-500 sm:px-6 rounded-b-xl">
-        Illustrative placeholder scoring model using synthetic cash-flow inputs. Not a formal credit
-        bureau score or binding loan offer.
+        Deterministic cash-flow underwriting heuristic built on synthetic MSME data. For Problem F2
+        demonstration only — not a formal bureau score or binding credit sanction.
       </div>
     </div>
   );

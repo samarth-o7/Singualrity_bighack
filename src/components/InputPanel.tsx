@@ -36,7 +36,7 @@ export function InputPanel({
   onResetPreset,
   onChangeInput,
 }: InputPanelProps) {
-  const isDeficit = inputs.monthlyFixedExpenses >= monthlyRevenue;
+  const isDeficit = monthlyNetSurplus <= 0;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white">
@@ -240,8 +240,8 @@ export function InputPanel({
                 isDeficit ? 'text-red-700' : 'text-emerald-700'
               }`}
             >
-              {isDeficit
-                ? `-${formatINR(inputs.monthlyFixedExpenses - monthlyRevenue)}`
+              {monthlyNetSurplus < 0
+                ? `-${formatINR(Math.abs(monthlyNetSurplus))}`
                 : formatINR(monthlyNetSurplus)}
             </p>
           </div>
