@@ -2,9 +2,18 @@ export type ViewMode = 'desktop' | 'mobile';
 
 export type RoleMode = 'borrower' | 'lender';
 
-export type ProfileId = 'kirana' | 'tailor' | 'repair' | 'women-enterprise';
+export type ProfileId =
+  | 'kirana'
+  | 'tailor'
+  | 'repair'
+  | 'women-enterprise'
+  | 'cash-heavy-vendor';
 
 export type ReadinessTier = 'Strong' | 'Moderate' | 'Watchlist';
+
+export type ProfileVerificationTag =
+  | 'Digital-Verified · Standard AA'
+  | 'Cash-Heavy · Outflow-Verified';
 
 export type RepaymentSchedule = 'Daily' | 'Weekly' | 'Monthly';
 
@@ -15,8 +24,8 @@ export type UnderwriterStatus =
   | 'Pre-Approved';
 
 /**
- * 6 tamper-resistant, system-fetched synthetic signals (Simulated RBI AA + BBPS + Udyam)
- * plus verified monthly cash flows for surplus calculation.
+ * Tamper-resistant, system-fetched synthetic signals (Simulated RBI AA + BBPS + Udyam)
+ * including cashDepositRegularity for cash-first MSMEs plus verified monthly cash flows.
  */
 export interface VerifiedMSMESignals {
   uniqueUpiPayersPerMonth: number; // UPI Merchant payer diversity
@@ -24,6 +33,7 @@ export interface VerifiedMSMESignals {
   inflowOutflowCv: number; // Cash-flow coefficient of variation (e.g. 0.15 = 15%)
   minToAvgBalanceRatio: number; // Liquidity cushion: min / avg monthly balance (0.0 - 1.0)
   bbpsOnTimeRate: number; // BBPS electricity / utility bill timeliness (0 - 100%)
+  cashDepositRegularity: number; // Bank counter / CDM cash deposit consistency (0 - 100)
   businessVintageMonths: number; // Udyam / GST operational vintage in months
   avgMonthlyInflow: number; // Verified average monthly inflow (₹)
   avgMonthlyOutflow: number; // Verified average monthly outflow (₹)
@@ -69,13 +79,19 @@ export interface StressTestScenario {
 }
 
 export interface ScorecardPillar {
-  id: 'liquidity' | 'discipline' | 'diversity' | 'stability' | 'vintage';
+  id:
+    | 'liquidity'
+    | 'discipline'
+    | 'diversity'
+    | 'cash-deposit'
+    | 'stability'
+    | 'vintage';
   label: string;
-  weightPercent: number; // 25, 25, 20, 20, 10
+  weightPercent: number;
   observedDisplay: string;
   subScore: number; // 0 - 100
-  weightedPoints: number; // contribution to 0 - 100
-  status: 'Strong' | 'Moderate' | 'Watch';
+  weightedPoints: number;
+  status: 'Strong' | 'Moderate' | 'Watch' | 'Reweighted';
   policyCode: string;
   rationale: string;
 }
@@ -91,9 +107,25 @@ export interface KnockOutRuleResult {
 
 export interface PolicyReasonCode {
   code: string;
-  category: 'Knock-Out' | 'Strength' | 'Watch' | 'Sizing';
+  category: 'Knock-Out' | 'Strength' | 'Watch' | 'Sizing' | 'Inclusion';
   title: string;
   detail: string;
+}
+
+export interface TrancheStep {
+  trancheNumber: 1 | 2 | 3;
+  label: string;
+  amount: number;
+  tenureLabel: string;
+  unlockCriteria: string;
+  status: 'Current Cap' | 'Next Unlock' | 'Growth Tier';
+}
+
+export interface StarterTrancheLadder {
+  isActive: boolean;
+  programModel: string;
+  reason: string;
+  tranches: TrancheStep[];
 }
 
 export interface BorrowerImprovementStep {
@@ -102,12 +134,32 @@ export interface BorrowerImprovementStep {
   targetMetric: string;
 }
 
+export interface BorrowerAiExplanation {
+  readinessSummary: string;
+  actionSteps: Array<{
+    title: string;
+    detail: string;
+  }>;
+}
+
+export interface LenderAiMemo {
+  underwritingMemo: string;
+  structuringMitigations: string[];
+  verificationQuestions: string[];
+}
+
 export interface CreditAssessment {
   // Effective (baseline or stressed) verified signals
   effectiveSignals: VerifiedMSMESignals;
   monthlyNetSurplus: number; // avgMonthlyInflow - avgMonthlyOutflow
   expenseCoverageRatio: number; // avgMonthlyInflow / avgMonthlyOutflow
   operatingMarginPercent: number;
+
+  // Cash-Heavy / Dynamic Weighting State
+  isCashHeavyProfile: boolean;
+  profileTag: ProfileVerificationTag;
+  weightingModeLabel: string;
+  starterTrancheLadder: StarterTrancheLadder;
 
   // Deterministic Scorecard (0-100)
   stabilityScore: number;
@@ -141,6 +193,7 @@ export interface CreditAssessment {
   underwritingDecision:
     | 'Eligible — Standard AA Track'
     | 'Eligible — Right-Sized by EMI Cap'
+    | 'Eligible — Starter Tranche Ladder'
     | 'Watchlist — Knock-Out Exposure Cap'
     | 'Watchlist — Starter Pilot Only'
     | 'Decline — Non-Positive Surplus';

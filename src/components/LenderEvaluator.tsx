@@ -2,11 +2,15 @@ import {
   CreditAssessment,
   LoanApplication,
   PolicyReasonCode,
+  ScorecardPillar,
   StressTestScenario,
   UnderwriterStatus,
 } from '../types/credit';
 import { formatINR } from '../utils/format';
+import { AiExplanationCard } from './AiExplanationCard';
+import { CashFlowChart } from './CashFlowChart';
 import { getReadinessDescriptor, StabilityGauge } from './StabilityGauge';
+import { StarterTrancheLadderCard } from './StarterTrancheLadderCard';
 import { isStressActive, StressTestPanel } from './StressTestPanel';
 
 interface LenderEvaluatorProps {
@@ -26,18 +30,31 @@ const REVIEW_STATUSES: UnderwriterStatus[] = [
   'Pre-Approved',
 ];
 
-const PILLAR_STATUS_TEXT: Record<'Strong' | 'Moderate' | 'Watch', string> = {
+const PILLAR_STATUS_TEXT: Record<ScorecardPillar['status'], string> = {
   Strong: 'text-emerald-700',
   Moderate: 'text-teal-700',
   Watch: 'text-red-700',
+  Reweighted: 'text-slate-500',
 };
 
 const REASON_CATEGORY_TEXT: Record<PolicyReasonCode['category'], string> = {
   'Knock-Out': 'text-red-700',
   Watch: 'text-amber-700',
   Sizing: 'text-teal-800',
+  Inclusion: 'text-teal-700',
   Strength: 'text-emerald-700',
 };
+
+function summarizeStress(scenario: StressTestScenario): string {
+  const parts: string[] = [];
+  if (scenario.inflowDipPercent > 0) parts.push(`-${scenario.inflowDipPercent}% inflow dip`);
+  if (scenario.additionalNachBounces > 0)
+    parts.push(`+${scenario.additionalNachBounces} NACH bounces`);
+  if (scenario.outflowShockPercent > 0)
+    parts.push(`+${scenario.outflowShockPercent}% outflow shock`);
+  if (scenario.bbpsDropPoints > 0) parts.push(`-${scenario.bbpsDropPoints}% BBPS drop`);
+  return parts.join(', ');
+}
 
 export function LenderEvaluator({
   application,
@@ -49,11 +66,17 @@ export function LenderEvaluator({
   onReviewStatusChange,
 }: LenderEvaluatorProps) {
   const stressed = isStressActive(stressScenario);
+  const stressSummary = stressed ? summarizeStress(stressScenario) : undefined;
+
   const {
     effectiveSignals,
     monthlyNetSurplus,
     expenseCoverageRatio,
     operatingMarginPercent,
+    isCashHeavyProfile,
+    profileTag,
+    weightingModeLabel,
+    starterTrancheLadder,
     stabilityScore,
     readinessTier,
     pillars,
@@ -76,6 +99,15 @@ export function LenderEvaluator({
 
   const isDeclined = recommendedLoanAmount === 0;
   const isDeficit = monthlyNetSurplus <= 0;
+
+  const snapshotKey = [
+    application.id,
+    application.requestedLoan,
+    stressScenario.inflowDipPercent,
+    stressScenario.additionalNachBounces,
+    stressScenario.outflowShockPercent,
+    stressScenario.bbpsDropPoints,
+  ].join('-');
 
   return (
     <div className="space-y-5">
@@ -109,14 +141,10 @@ export function LenderEvaluator({
                 <span aria-hidden="true">·</span>
                 <span
                   className={
-                    application.source === 'borrower-consent'
-                      ? 'font-semibold text-teal-700'
-                      : 'text-slate-500'
+                    isCashHeavyProfile ? 'font-semibold text-teal-800' : 'text-slate-600'
                   }
                 >
-                  {application.source === 'borrower-consent'
-                    ? 'Borrower AA Consent'
-                    : 'Synthetic Sample'}
+                  {profileTag}
                 </span>
               </div>
 
@@ -153,7 +181,7 @@ export function LenderEvaluator({
             </div>
           </div>
 
-          {/* 6 Tamper-Resistant Signals Summary Strip */}
+          {/* Verified AA + BBPS + Udyam Signals Summary Strip */}
           <div className="mt-4 border-t border-slate-100 pt-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <span className="font-semibold text-slate-700">
@@ -166,13 +194,19 @@ export function LenderEvaluator({
 
             <dl
               className={`grid gap-x-4 gap-y-2.5 text-xs ${
-                isMobileFrame ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'
+                isMobileFrame ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'
               }`}
             >
               <div>
-                <dt className="text-[11px] text-slate-500">Unique UPI payers / mo</dt>
+                <dt className="text-[11px] text-slate-500">Unique UPI payers</dt>
                 <dd className="font-mono font-semibold text-slate-900 tabular-nums">
-                  {effectiveSignals.uniqueUpiPayersPerMonth} payers
+                  {effectiveSignals.uniqueUpiPayersPerMonth}/mo
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[11px] text-slate-500">Cash deposit reg.</dt>
+                <dd className="font-mono font-semibold text-slate-900 tabular-nums">
+                  {effectiveSignals.cashDepositRegularity}/100
                 </dd>
               </div>
               <div>
@@ -190,6 +224,12 @@ export function LenderEvaluator({
                 </dd>
               </div>
               <div>
+                <dt className="text-[11px] text-slate-500">BBPS on-time</dt>
+                <dd className="font-mono font-semibold text-slate-900 tabular-nums">
+                  {effectiveSignals.bbpsOnTimeRate}%
+                </dd>
+              </div>
+              <div>
                 <dt className="text-[11px] text-slate-500">Cash-flow CV</dt>
                 <dd className="font-mono font-semibold text-slate-900 tabular-nums">
                   {effectiveSignals.inflowOutflowCv.toFixed(2)}
@@ -202,15 +242,15 @@ export function LenderEvaluator({
                 </dd>
               </div>
               <div>
-                <dt className="text-[11px] text-slate-500">BBPS on-time rate</dt>
-                <dd className="font-mono font-semibold text-slate-900 tabular-nums">
-                  {effectiveSignals.bbpsOnTimeRate}%
-                </dd>
-              </div>
-              <div>
                 <dt className="text-[11px] text-slate-500">Udyam vintage</dt>
                 <dd className="font-mono font-semibold text-slate-900 tabular-nums">
                   {effectiveSignals.businessVintageMonths} mos
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[11px] text-slate-500">Requested loan</dt>
+                <dd className="font-mono font-semibold text-slate-900 tabular-nums">
+                  {formatINR(requestedLoan)}
                 </dd>
               </div>
             </dl>
@@ -248,9 +288,7 @@ export function LenderEvaluator({
           {/* Hard Knock-Out Rules Strip */}
           <div className="mt-5 border-t border-slate-100 pt-4">
             <div className="flex items-baseline justify-between gap-2">
-              <h4 className="text-xs font-semibold text-slate-900">
-                Hard Knock-Out Rules
-              </h4>
+              <h4 className="text-xs font-semibold text-slate-900">Hard Knock-Out Rules</h4>
               <span
                 className={`font-mono text-xs font-semibold ${
                   knockOutTriggered ? 'text-red-700' : 'text-emerald-700'
@@ -305,12 +343,14 @@ export function LenderEvaluator({
               <p className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
                 {isDeclined
                   ? 'Exposure capped at ₹0'
-                  : `${Math.round(loanCoverageRatio * 100)}% of ${formatINR(requestedLoan)}`}
+                  : starterTrancheLadder.isActive
+                    ? 'Starter Tranche 1 Cap'
+                    : `${Math.round(loanCoverageRatio * 100)}% of ${formatINR(requestedLoan)}`}
               </p>
             </div>
 
             <div className="bg-slate-50/70 p-3.5">
-              <p className="text-xs text-slate-500">Tenure & EMI cap</p>
+              <p className="text-xs text-slate-500">Tenure &amp; EMI cap</p>
               <p className="mt-1 font-mono text-lg font-bold tracking-tight text-slate-900 tabular-nums">
                 {isDeclined ? '—' : `${tenureMonths} months`}
               </p>
@@ -343,16 +383,46 @@ export function LenderEvaluator({
           </div>
         </div>
 
-        {/* 5-Pillar Weighted Scorecard + Cash-Flow Ratios + Policy Reason Codes + Guardrails */}
+        {/* Starter Tranche Ladder + Live Cash-Flow Chart + AI Credit Memo + Scorecard + Codes + Guardrails */}
         <div className="space-y-6 border-t border-slate-200 p-5 sm:p-6">
-          {/* 1. Weighted Scorecard Table */}
-          <div>
-            <div className="flex items-baseline justify-between gap-2">
+          {/* Starter Tranche Ladder (if Cash-Heavy profile) */}
+          {starterTrancheLadder.isActive && (
+            <StarterTrancheLadderCard
+              ladder={starterTrancheLadder}
+              recommendedLoanAmount={recommendedLoanAmount}
+              isMobileFrame={isMobileFrame}
+            />
+          )}
+
+          {/* Live Cash-Flow & Repayment Capacity Bar Chart (reacts live to Stress-Test!) */}
+          <CashFlowChart
+            assessment={activeAssessment}
+            baselineAssessment={baselineAssessment}
+            isStressed={stressed}
+          />
+
+          {/* Explanation-Only Read-Only AI Credit Memo Layer */}
+          <div className="border-t border-slate-100 pt-5">
+            <AiExplanationCard
+              role="lender"
+              businessName={application.businessName}
+              businessType={application.businessType}
+              location={application.location}
+              assessment={activeAssessment}
+              isStressed={stressed}
+              stressSummary={stressSummary}
+              snapshotKey={snapshotKey}
+            />
+          </div>
+
+          {/* Weighted Scorecard Table (Standard or Dynamic Cash-Heavy Weights) */}
+          <div className="border-t border-slate-100 pt-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h3 className="text-sm font-semibold text-slate-900">
-                Weighted 5-pillar scorecard (0–100)
+                Weighted deterministic scorecard (0–100)
               </h3>
               <span className="font-mono text-xs text-slate-500 tabular-nums">
-                25 / 25 / 20 / 20 / 10
+                {weightingModeLabel}
               </span>
             </div>
 
@@ -400,10 +470,10 @@ export function LenderEvaluator({
             </div>
           </div>
 
-          {/* 2. Verified Cash-Flow & Surplus Ratios */}
+          {/* Verified Cash-Flow Ratios */}
           <div className="border-t border-slate-100 pt-5">
             <h3 className="text-sm font-semibold text-slate-900">
-              Verified monthly cash flow & EMI capacity
+              Verified monthly cash flow &amp; coverage
             </h3>
             <dl
               className={`mt-3 grid gap-x-4 gap-y-3 ${
@@ -446,7 +516,7 @@ export function LenderEvaluator({
             </dl>
           </div>
 
-          {/* 3. Explicit Policy Reason Codes */}
+          {/* Explicit Policy Reason Codes */}
           <div className="border-t border-slate-100 pt-5">
             <div className="flex items-baseline justify-between gap-2">
               <h3 className="text-sm font-semibold text-slate-900">
@@ -477,7 +547,7 @@ export function LenderEvaluator({
             </ul>
           </div>
 
-          {/* 4. Fair Loan Structuring Guardrails */}
+          {/* Fair Loan Structuring Guardrails */}
           <div className="border-t border-slate-100 pt-5">
             <h3 className="text-sm font-semibold text-slate-900">
               Fair loan structuring guardrails

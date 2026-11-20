@@ -3,9 +3,11 @@ import {
   CreditAssessment,
   KnockOutRuleResult,
   PolicyReasonCode,
+  ProfileVerificationTag,
   ReadinessTier,
   RepaymentSchedule,
   ScorecardPillar,
+  StarterTrancheLadder,
   StressTestScenario,
   VerifiedMSMESignals,
 } from '../types/credit';
@@ -17,6 +19,13 @@ export const DEFAULT_STRESS_SCENARIO: StressTestScenario = {
   outflowShockPercent: 0,
   bbpsDropPoints: 0,
 };
+
+/**
+ * Threshold below which a merchant is classified as Cash-Heavy / Thin Digital Trail
+ * and automatically routed to dynamic outflow-verified weighting + PM SVANidhi-style Starter Tranche Ladder.
+ */
+const CASH_HEAVY_UPI_THRESHOLD = 25;
+const STARTER_TRANCHE_CAP = 15000;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -41,13 +50,14 @@ export function applyStressTest(
   const stressedInflow = Math.round(base.avgMonthlyInflow * dipFactor);
   const stressedOutflow = Math.round(base.avgMonthlyOutflow * outflowFactor);
 
-  // Lean-month inflow dips increase cash-flow CV and compress min-to-avg balance cushion
-  const cvStressBump = (stress.inflowDipPercent / 100) * 0.32 + (stress.outflowShockPercent / 100) * 0.12;
+  const cvStressBump =
+    (stress.inflowDipPercent / 100) * 0.32 + (stress.outflowShockPercent / 100) * 0.12;
   const balanceCompression = clamp(
     1 - (stress.inflowDipPercent / 100) * 0.75 - (stress.outflowShockPercent / 100) * 0.4,
     0.2,
     1
   );
+  const cashDepositCompression = Math.round((stress.inflowDipPercent / 100) * 28);
 
   return {
     uniqueUpiPayersPerMonth: Math.max(
@@ -60,6 +70,7 @@ export function applyStressTest(
       clamp(base.minToAvgBalanceRatio * balanceCompression, 0.02, 0.95).toFixed(2)
     ),
     bbpsOnTimeRate: clamp(Math.round(base.bbpsOnTimeRate - stress.bbpsDropPoints), 0, 100),
+    cashDepositRegularity: clamp(base.cashDepositRegularity - cashDepositCompression, 10, 100),
     businessVintageMonths: base.businessVintageMonths,
     avgMonthlyInflow: stressedInflow,
     avgMonthlyOutflow: stressedOutflow,
@@ -68,10 +79,9 @@ export function applyStressTest(
 
 /**
  * 100% Deterministic Financial Underwriting Engine (Zero LLM in Math).
- * Evaluates thin-file Indian MSMEs strictly from 6 tamper-resistant signals fetched via
- * Simulated RBI Account Aggregator + BBPS + Udyam, with Hard Knock-Out Rules,
- * a 5-pillar weighted scorecard (25/25/20/20/10), formula-driven EMI loan sizing,
- * and explicit Policy Reason Codes.
+ * Supports both Standard AA Digital-Verified MSMEs and Cash-Heavy · Outflow-Verified Vendors
+ * with dynamic scorecard reweighting, Hard Knock-Out Rules, PM SVANidhi-modeled Starter Tranche Ladder,
+ * formula-driven EMI sizing (35%-40% of surplus), and explicit Policy Reason Codes.
  */
 export function evaluateMSMECredit(
   baseSignals: VerifiedMSMESignals,
@@ -85,6 +95,7 @@ export function evaluateMSMECredit(
     inflowOutflowCv,
     minToAvgBalanceRatio,
     bbpsOnTimeRate,
+    cashDepositRegularity,
     businessVintageMonths,
     avgMonthlyInflow,
     avgMonthlyOutflow,
@@ -105,6 +116,12 @@ export function evaluateMSMECredit(
     avgMonthlyInflow > 0
       ? clamp((monthlyNetSurplus / avgMonthlyInflow) * 100, -100, 100)
       : 0;
+
+  // Cash-Heavy / Thin Digital Trail detection (based on base AA profile UPI density)
+  const isCashHeavyProfile = baseSignals.uniqueUpiPayersPerMonth < CASH_HEAVY_UPI_THRESHOLD;
+  const profileTag: ProfileVerificationTag = isCashHeavyProfile
+    ? 'Cash-Heavy · Outflow-Verified'
+    : 'Digital-Verified · Standard AA';
 
   // ---------------------------------------------------------------------------
   // 2. Hard Knock-Out Rules
@@ -140,14 +157,16 @@ export function evaluateMSMECredit(
   ];
 
   // ---------------------------------------------------------------------------
-  // 3. 5-Pillar Weighted Scorecard (0–100)
-  //    Liquidity Cushion (25%) | Payment/Bill Discipline (25%) |
-  //    Payer Diversity (20%)   | Cash-Flow Stability (20%)     | Business Vintage (10%)
+  // 3. Deterministic Dynamic-Weight Scorecard (0–100)
+  //    Standard AA: Liquidity 25 | Discipline 25 | Payer Diversity 20 | Stability 20 | Vintage 10
+  //    Cash-Heavy:  Discipline 30 | Cash-Deposit 25 | Liquidity 20 | Vintage 15 | Stability 10
+  //                 (UPI Payer Diversity dynamically shifted to 0% so cash-first vendors aren't unfairly rejected)
   // ---------------------------------------------------------------------------
 
-  // Pillar 1: Liquidity Cushion (25%) — driven by minToAvgBalanceRatio + surplus buffer
+  // Sub-scores (0–100)
   const ratioPts = clamp((minToAvgBalanceRatio / 0.5) * 85, 8, 88);
-  const marginBonus = monthlyNetSurplus > 0 ? clamp((operatingMarginPercent / 35) * 12, 0, 12) : -10;
+  const marginBonus =
+    monthlyNetSurplus > 0 ? clamp((operatingMarginPercent / 35) * 12, 0, 12) : -10;
   const liquiditySubScore = clamp(Math.round(ratioPts + marginBonus), 5, 100);
   const liquidityPolicyCode =
     minToAvgBalanceRatio >= 0.35
@@ -156,7 +175,6 @@ export function evaluateMSMECredit(
         ? 'RC_LIQ_ADEQUATE_RESERVE'
         : 'RC_LIQ_THIN_BUFFER';
 
-  // Pillar 2: Payment & Bill Discipline (25%) — BBPS timeliness (60%) + NACH cleanliness (40%)
   const nachSubScore =
     nachBounces6m === 0
       ? 100
@@ -179,7 +197,6 @@ export function evaluateMSMECredit(
           ? 'RC_DISC_ACCEPTABLE_BILLS'
           : 'RC_DISC_DELINQUENT_BILLS';
 
-  // Pillar 3: Payer Diversity (20%) — uniqueUpiPayersPerMonth (mitigates single-buyer concentration)
   const diversitySubScore = clamp(
     Math.round(18 + Math.min(uniqueUpiPayersPerMonth, 160) * 0.5125),
     15,
@@ -190,10 +207,16 @@ export function evaluateMSMECredit(
       ? 'RC_DIV_BROAD_CUSTOMER_BASE'
       : uniqueUpiPayersPerMonth >= 45
         ? 'RC_DIV_MODERATE_BASE'
-        : 'RC_DIV_HIGH_CONCENTRATION';
+        : 'RC_DIV_THIN_UPI_TRAIL';
 
-  // Pillar 4: Cash-Flow Stability (20%) — inflowOutflowCv (lower CV = steadier cash flow)
-  // CV 0.12 -> 100, CV 0.25 -> 74, CV 0.40 -> 44, CV 0.55+ -> 14
+  const cashDepositSubScore = clamp(Math.round(cashDepositRegularity), 10, 100);
+  const cashDepositPolicyCode =
+    cashDepositRegularity >= 85
+      ? 'RC_CASH_STEADY_CDM_DEPOSITS'
+      : cashDepositRegularity >= 65
+        ? 'RC_CASH_MODERATE_DEPOSITS'
+        : 'RC_CASH_ERRATIC_DEPOSITS';
+
   const stabilitySubScore = clamp(Math.round(124 - inflowOutflowCv * 200), 10, 100);
   const stabilityPolicyCode =
     inflowOutflowCv <= 0.2
@@ -202,8 +225,6 @@ export function evaluateMSMECredit(
         ? 'RC_STAB_SEASONAL_SWING'
         : 'RC_STAB_VOLATILE_CV';
 
-  // Pillar 5: Business Vintage (10%) — Udyam/GST verified business age
-  // 48+ mo -> 100, 36 mo -> 85, 24 mo -> 68, 12 mo -> 48, 6 mo -> 30
   const vintageSubScore = clamp(Math.round(22 + Math.min(businessVintageMonths, 52) * 1.5), 15, 100);
   const vintagePolicyCode =
     businessVintageMonths >= 36
@@ -212,73 +233,167 @@ export function evaluateMSMECredit(
         ? 'RC_VINT_GROWING'
         : 'RC_VINT_EARLY_STAGE';
 
-  const pillars: ScorecardPillar[] = [
-    {
-      id: 'liquidity',
-      label: 'Liquidity Cushion',
-      weightPercent: 25,
-      observedDisplay: `${Math.round(minToAvgBalanceRatio * 100)}% min/avg bal`,
-      subScore: liquiditySubScore,
-      weightedPoints: Number((liquiditySubScore * 0.25).toFixed(1)),
-      status: liquiditySubScore >= 75 ? 'Strong' : liquiditySubScore >= 52 ? 'Moderate' : 'Watch',
-      policyCode: liquidityPolicyCode,
-      rationale: 'Minimum-to-average bank balance ratio from AA bank statements.',
-    },
-    {
-      id: 'discipline',
-      label: 'Payment / Bill Discipline',
-      weightPercent: 25,
-      observedDisplay: `${bbpsOnTimeRate}% BBPS · ${nachBounces6m} NACH`,
-      subScore: disciplineSubScore,
-      weightedPoints: Number((disciplineSubScore * 0.25).toFixed(1)),
-      status:
-        nachBounces6m > 2
-          ? 'Watch'
-          : disciplineSubScore >= 78
-            ? 'Strong'
-            : disciplineSubScore >= 55
-              ? 'Moderate'
-              : 'Watch',
-      policyCode: disciplinePolicyCode,
-      rationale: 'Combined BBPS electricity/utility timeliness and 6-month NACH dishonor history.',
-    },
-    {
-      id: 'diversity',
-      label: 'Payer Diversity',
-      weightPercent: 20,
-      observedDisplay: `${uniqueUpiPayersPerMonth} UPI payers/mo`,
-      subScore: diversitySubScore,
-      weightedPoints: Number((diversitySubScore * 0.2).toFixed(1)),
-      status: diversitySubScore >= 72 ? 'Strong' : diversitySubScore >= 48 ? 'Moderate' : 'Watch',
-      policyCode: diversityPolicyCode,
-      rationale: 'Unique monthly UPI merchant counterparties reducing buyer-concentration risk.',
-    },
-    {
-      id: 'stability',
-      label: 'Cash-Flow Stability',
-      weightPercent: 20,
-      observedDisplay: `${inflowOutflowCv.toFixed(2)} CV`,
-      subScore: stabilitySubScore,
-      weightedPoints: Number((stabilitySubScore * 0.2).toFixed(1)),
-      status: stabilitySubScore >= 74 ? 'Strong' : stabilitySubScore >= 50 ? 'Moderate' : 'Watch',
-      policyCode: stabilityPolicyCode,
-      rationale: 'Inflow-to-outflow coefficient of variation across trailing bank cycles.',
-    },
-    {
-      id: 'vintage',
-      label: 'Business Vintage',
-      weightPercent: 10,
-      observedDisplay: `${businessVintageMonths} mos (Udyam)`,
-      subScore: vintageSubScore,
-      weightedPoints: Number((vintageSubScore * 0.1).toFixed(1)),
-      status: vintageSubScore >= 72 ? 'Strong' : vintageSubScore >= 48 ? 'Moderate' : 'Watch',
-      policyCode: vintagePolicyCode,
-      rationale: 'Verified Udyam / GST enterprise continuity.',
-    },
-  ];
+  const weightingModeLabel = isCashHeavyProfile
+    ? 'Dynamic Cash-Heavy (30 / 25 / 20 / 15 / 10)'
+    : 'Standard AA (25 / 25 / 20 / 20 / 10)';
+
+  const pillars: ScorecardPillar[] = isCashHeavyProfile
+    ? [
+        {
+          id: 'discipline',
+          label: 'BBPS & NACH Discipline',
+          weightPercent: 30,
+          observedDisplay: `${bbpsOnTimeRate}% BBPS · ${nachBounces6m} NACH`,
+          subScore: disciplineSubScore,
+          weightedPoints: Number((disciplineSubScore * 0.3).toFixed(1)),
+          status:
+            nachBounces6m > 2
+              ? 'Watch'
+              : disciplineSubScore >= 78
+                ? 'Strong'
+                : disciplineSubScore >= 55
+                  ? 'Moderate'
+                  : 'Watch',
+          policyCode: disciplinePolicyCode,
+          rationale:
+            'Up-weighted (+5%) for cash-heavy vendors using verified utility bills & NACH discipline.',
+        },
+        {
+          id: 'cash-deposit',
+          label: 'Cash-Deposit Regularity',
+          weightPercent: 25,
+          observedDisplay: `${cashDepositRegularity}/100 bank deposits`,
+          subScore: cashDepositSubScore,
+          weightedPoints: Number((cashDepositSubScore * 0.25).toFixed(1)),
+          status:
+            cashDepositSubScore >= 78
+              ? 'Strong'
+              : cashDepositSubScore >= 58
+                ? 'Moderate'
+                : 'Watch',
+          policyCode: cashDepositPolicyCode,
+          rationale:
+            'Replaces UPI Payer Diversity using steady bank counter / CDM cash deposit cadence.',
+        },
+        {
+          id: 'liquidity',
+          label: 'Liquidity Cushion',
+          weightPercent: 20,
+          observedDisplay: `${Math.round(minToAvgBalanceRatio * 100)}% min/avg bal`,
+          subScore: liquiditySubScore,
+          weightedPoints: Number((liquiditySubScore * 0.2).toFixed(1)),
+          status:
+            liquiditySubScore >= 75 ? 'Strong' : liquiditySubScore >= 52 ? 'Moderate' : 'Watch',
+          policyCode: liquidityPolicyCode,
+          rationale: 'Minimum-to-average bank balance ratio from AA bank statements.',
+        },
+        {
+          id: 'vintage',
+          label: 'Udyam Business Vintage',
+          weightPercent: 15,
+          observedDisplay: `${businessVintageMonths} mos (Udyam)`,
+          subScore: vintageSubScore,
+          weightedPoints: Number((vintageSubScore * 0.15).toFixed(1)),
+          status: vintageSubScore >= 72 ? 'Strong' : vintageSubScore >= 48 ? 'Moderate' : 'Watch',
+          policyCode: vintagePolicyCode,
+          rationale: 'Up-weighted (+5%) to reward proven multi-year continuity for cash-first MSMEs.',
+        },
+        {
+          id: 'stability',
+          label: 'Cash-Flow Stability',
+          weightPercent: 10,
+          observedDisplay: `${inflowOutflowCv.toFixed(2)} CV`,
+          subScore: stabilitySubScore,
+          weightedPoints: Number((stabilitySubScore * 0.1).toFixed(1)),
+          status:
+            stabilitySubScore >= 74 ? 'Strong' : stabilitySubScore >= 50 ? 'Moderate' : 'Watch',
+          policyCode: stabilityPolicyCode,
+          rationale: 'Inflow-to-outflow coefficient of variation across trailing bank cycles.',
+        },
+        {
+          id: 'diversity',
+          label: 'UPI Payer Diversity (Exempt)',
+          weightPercent: 0,
+          observedDisplay: `${uniqueUpiPayersPerMonth} UPI payers/mo`,
+          subScore: diversitySubScore,
+          weightedPoints: 0,
+          status: 'Reweighted',
+          policyCode: 'RC_CASH_HEAVY_REWEIGHT',
+          rationale:
+            'Weight shifted to BBPS, Cash-Deposit Regularity & Udyam Vintage to prevent unfair cash-vendor rejection.',
+        },
+      ]
+    : [
+        {
+          id: 'liquidity',
+          label: 'Liquidity Cushion',
+          weightPercent: 25,
+          observedDisplay: `${Math.round(minToAvgBalanceRatio * 100)}% min/avg bal`,
+          subScore: liquiditySubScore,
+          weightedPoints: Number((liquiditySubScore * 0.25).toFixed(1)),
+          status:
+            liquiditySubScore >= 75 ? 'Strong' : liquiditySubScore >= 52 ? 'Moderate' : 'Watch',
+          policyCode: liquidityPolicyCode,
+          rationale: 'Minimum-to-average bank balance ratio from AA bank statements.',
+        },
+        {
+          id: 'discipline',
+          label: 'Payment / Bill Discipline',
+          weightPercent: 25,
+          observedDisplay: `${bbpsOnTimeRate}% BBPS · ${nachBounces6m} NACH`,
+          subScore: disciplineSubScore,
+          weightedPoints: Number((disciplineSubScore * 0.25).toFixed(1)),
+          status:
+            nachBounces6m > 2
+              ? 'Watch'
+              : disciplineSubScore >= 78
+                ? 'Strong'
+                : disciplineSubScore >= 55
+                  ? 'Moderate'
+                  : 'Watch',
+          policyCode: disciplinePolicyCode,
+          rationale:
+            'Combined BBPS electricity/utility timeliness and 6-month NACH dishonor history.',
+        },
+        {
+          id: 'diversity',
+          label: 'Payer Diversity',
+          weightPercent: 20,
+          observedDisplay: `${uniqueUpiPayersPerMonth} UPI payers/mo`,
+          subScore: diversitySubScore,
+          weightedPoints: Number((diversitySubScore * 0.2).toFixed(1)),
+          status:
+            diversitySubScore >= 72 ? 'Strong' : diversitySubScore >= 48 ? 'Moderate' : 'Watch',
+          policyCode: diversityPolicyCode,
+          rationale:
+            'Unique monthly UPI merchant counterparties reducing buyer-concentration risk.',
+        },
+        {
+          id: 'stability',
+          label: 'Cash-Flow Stability',
+          weightPercent: 20,
+          observedDisplay: `${inflowOutflowCv.toFixed(2)} CV`,
+          subScore: stabilitySubScore,
+          weightedPoints: Number((stabilitySubScore * 0.2).toFixed(1)),
+          status:
+            stabilitySubScore >= 74 ? 'Strong' : stabilitySubScore >= 50 ? 'Moderate' : 'Watch',
+          policyCode: stabilityPolicyCode,
+          rationale: 'Inflow-to-outflow coefficient of variation across trailing bank cycles.',
+        },
+        {
+          id: 'vintage',
+          label: 'Business Vintage',
+          weightPercent: 10,
+          observedDisplay: `${businessVintageMonths} mos (Udyam)`,
+          subScore: vintageSubScore,
+          weightedPoints: Number((vintageSubScore * 0.1).toFixed(1)),
+          status: vintageSubScore >= 72 ? 'Strong' : vintageSubScore >= 48 ? 'Moderate' : 'Watch',
+          policyCode: vintagePolicyCode,
+          rationale: 'Verified Udyam / GST enterprise continuity.',
+        },
+      ];
 
   const rawWeightedScore = pillars.reduce((sum, pillar) => sum + pillar.weightedPoints, 0);
-  // Apply hard ceiling if negative surplus or severe NACH breach
   let stabilityScore = clamp(Math.round(rawWeightedScore), 0, 100);
   if (koSurplusTriggered) {
     stabilityScore = Math.min(stabilityScore, 34);
@@ -293,12 +408,14 @@ export function evaluateMSMECredit(
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Formula-Driven Fair Loan Sizing (EMI capped at 35%–40% of Verified Surplus)
+  // 4. Formula-Driven Fair Loan Sizing + PM SVANidhi Starter Tranche Ladder
   // ---------------------------------------------------------------------------
-  // Indicative APR (% p.a.)
   let interestMinApr = 21.5;
   let interestMaxApr = 24.5;
-  if (readinessTier === 'Strong' && stabilityScore >= 82) {
+  if (isCashHeavyProfile && !knockOutTriggered && readinessTier === 'Strong') {
+    interestMinApr = 15.0;
+    interestMaxApr = 17.5;
+  } else if (readinessTier === 'Strong' && stabilityScore >= 82) {
     interestMinApr = 13.5;
     interestMaxApr = 15.5;
   } else if (readinessTier === 'Strong') {
@@ -315,7 +432,6 @@ export function evaluateMSMECredit(
   const indicativeInterestRange = `${interestMinApr.toFixed(1)}% – ${interestMaxApr.toFixed(1)}% p.a.`;
   const midApr = (interestMinApr + interestMaxApr) / 2;
 
-  // Max safe monthly EMI ratio: 40% (Strong), 35% (Moderate), 25% (Watchlist), 18% (KO NACH), 0% (KO Surplus)
   const maxEmiRatio = koSurplusTriggered
     ? 0
     : koNachTriggered
@@ -329,9 +445,16 @@ export function evaluateMSMECredit(
   const maxEmiRatioPercent = Math.round(maxEmiRatio * 100);
   const maxSafeMonthlyEmi = Math.round(positiveSurplus * maxEmiRatio);
 
-  // Tenure (6–24 months)
+  // Starter Tranche Ladder activation for Cash-Heavy / Thin Digital Trail
+  const starterTrancheActive = isCashHeavyProfile && !koSurplusTriggered;
+
+  // Tenure (6–24 months; 12-month Starter Tranche standard unless KO forces 6 months)
   let tenureMonths = 12;
-  if (knockOutTriggered || requestedLoan <= 45000) {
+  if (knockOutTriggered) {
+    tenureMonths = 6;
+  } else if (starterTrancheActive) {
+    tenureMonths = 12;
+  } else if (requestedLoan <= 45000) {
     tenureMonths = 6;
   } else if (requestedLoan <= 90000) {
     tenureMonths = 9;
@@ -348,7 +471,11 @@ export function evaluateMSMECredit(
   let repaymentSchedule: RepaymentSchedule = 'Weekly';
   let repaymentRationale =
     'Weekly auto-debit aligns with shop replenishment while smoothing intra-month variation.';
-  if (uniqueUpiPayersPerMonth >= 110 && inflowOutflowCv <= 0.24 && !koNachTriggered) {
+  if (isCashHeavyProfile) {
+    repaymentSchedule = 'Weekly';
+    repaymentRationale =
+      'Weekly small-ticket instalments match regular bank cash-deposit cycles and keep starter repayment predictable.';
+  } else if (uniqueUpiPayersPerMonth >= 110 && inflowOutflowCv <= 0.24 && !koNachTriggered) {
     repaymentSchedule = 'Daily';
     repaymentRationale =
       'High daily UPI payer velocity supports low-friction daily micro-sweeps from merchant settlements.';
@@ -369,11 +496,11 @@ export function evaluateMSMECredit(
       ? (1 - Math.pow(1 + monthlyRate, -tenureMonths)) / monthlyRate
       : tenureMonths;
 
-  let formulaMaxLoan = maxSafeMonthlyEmi * annuityFactor;
-
-  // Hard knock-out exposure cap: under NACH bounce knock-out, cap pilot exposure at ₹40,000 max
+  const formulaMaxLoan = maxSafeMonthlyEmi * annuityFactor;
   const koPilotCap = koNachTriggered ? 40000 : Infinity;
-  const boundedLoan = Math.min(requestedLoan, formulaMaxLoan, koPilotCap);
+  const starterCap = starterTrancheActive ? STARTER_TRANCHE_CAP : Infinity;
+
+  const boundedLoan = Math.min(requestedLoan, formulaMaxLoan, koPilotCap, starterCap);
 
   const recommendedLoanAmount =
     koSurplusTriggered || boundedLoan < 5000
@@ -398,6 +525,41 @@ export function evaluateMSMECredit(
 
   const remainingMonthlyBuffer = Math.max(0, positiveSurplus - estimatedMonthlyEmi);
 
+  // Starter Tranche Ladder metadata (PM SVANidhi-modeled trust ladder)
+  const starterTrancheLadder: StarterTrancheLadder = {
+    isActive: starterTrancheActive,
+    programModel: 'PM SVANidhi-Modeled Trust Ladder',
+    reason: starterTrancheActive
+      ? 'Thin UPI digital trail detected (<25 unique monthly UPI payers). Initial exposure is safely capped at Tranche 1 (up to ₹15,000, 12-month term) while building formal repayment history.'
+      : 'Standard digital AA profile — full EMI-capped working capital sizing applies.',
+    tranches: [
+      {
+        trancheNumber: 1,
+        label: 'Tranche 1 · Starter',
+        amount: 15000,
+        tenureLabel: '12 months',
+        unlockCriteria: 'Current approved starter cap via BBPS + cash deposit discipline',
+        status: 'Current Cap',
+      },
+      {
+        trancheNumber: 2,
+        label: 'Tranche 2 · Step-Up',
+        amount: 25000,
+        tenureLabel: '12–18 months',
+        unlockCriteria: 'Unlocks upon 6 consecutive on-time cycles with 0 NACH bounces',
+        status: 'Next Unlock',
+      },
+      {
+        trancheNumber: 3,
+        label: 'Tranche 3 · Growth',
+        amount: 50000,
+        tenureLabel: '18–24 months',
+        unlockCriteria: 'Unlocks after full Tranche 2 repayment + growing UPI QR collections',
+        status: 'Growth Tier',
+      },
+    ],
+  };
+
   // Underwriting Decision
   let underwritingDecision: CreditAssessment['underwritingDecision'] =
     'Eligible — Standard AA Track';
@@ -405,6 +567,8 @@ export function evaluateMSMECredit(
     underwritingDecision = 'Decline — Non-Positive Surplus';
   } else if (koNachTriggered) {
     underwritingDecision = 'Watchlist — Knock-Out Exposure Cap';
+  } else if (starterTrancheActive) {
+    underwritingDecision = 'Eligible — Starter Tranche Ladder';
   } else if (readinessTier === 'Watchlist') {
     underwritingDecision = 'Watchlist — Starter Pilot Only';
   } else if (loanCoverageRatio < 0.95) {
@@ -431,12 +595,21 @@ export function evaluateMSMECredit(
       category: 'Knock-Out',
       title: `NACH bounce ceiling exceeded (${nachBounces6m} > 2 in 6m)`,
       detail:
-        'Hard knock-out rule forced Watchlist tier, capped max EMI at 18% of surplus, and restricted maximum pilot exposure to ₹40,000 over 6 months.',
+        'Hard knock-out rule forced Watchlist tier, capped max EMI at 18% of surplus, and restricted maximum pilot exposure to 6 months.',
     });
   }
 
-  // Add pillar-level policy codes
+  if (isCashHeavyProfile) {
+    policyReasonCodes.push({
+      code: 'RC_CASH_HEAVY_REWEIGHT',
+      category: 'Inclusion',
+      title: 'Cash-Heavy · Outflow-Verified dynamic weighting applied',
+      detail: `Low UPI payer count (${uniqueUpiPayersPerMonth}/mo) triggered automatic weight shift onto BBPS timeliness (30%), Cash-Deposit Regularity (25%), and Udyam Vintage (15%) to prevent unfair exclusion.`,
+    });
+  }
+
   for (const pillar of pillars) {
+    if (pillar.weightPercent === 0) continue;
     const category =
       pillar.status === 'Strong'
         ? 'Strength'
@@ -444,7 +617,6 @@ export function evaluateMSMECredit(
           ? 'Watch'
           : 'Strength';
 
-    // Include all Watch pillars and strongest positive drivers
     if (pillar.status === 'Watch' || pillar.subScore >= 75) {
       policyReasonCodes.push({
         code: pillar.policyCode,
@@ -455,9 +627,16 @@ export function evaluateMSMECredit(
     }
   }
 
-  // Add sizing policy reason code
   if (!koSurplusTriggered) {
-    if (recommendedLoanAmount < requestedLoan) {
+    if (starterTrancheActive && recommendedLoanAmount <= STARTER_TRANCHE_CAP) {
+      policyReasonCodes.push({
+        code: 'RC_SIZE_STARTER_TRANCHE_LADDER',
+        category: 'Sizing',
+        title: `Starter Tranche 1 cap applied (${formatINR(recommendedLoanAmount)} / 12m)`,
+        detail:
+          'Thin digital trail capped at Tranche 1 (up to ₹15,000) under PM SVANidhi-style trust ladder: ₹15,000 → ₹25,000 → ₹50,000 upon clean repayment.',
+      });
+    } else if (recommendedLoanAmount < requestedLoan) {
       policyReasonCodes.push({
         code: koNachTriggered ? 'RC_SIZE_KO_PILOT_CAP' : 'RC_SIZE_EMI_SURPLUS_CAP',
         category: 'Sizing',
@@ -486,24 +665,24 @@ export function evaluateMSMECredit(
     structuringGuardrails.push(
       `Enforce ${repaymentSchedule.toLowerCase()} ${repaymentSchedule === 'Daily' ? 'UPI merchant settlement sweep' : 'e-NACH / UPI AutoPay'} capped at ${formatINR(estimatedMonthlyEmi)}/mo (≤${maxEmiRatioPercent}% of verified surplus).`
     );
+    if (starterTrancheActive) {
+      structuringGuardrails.push(
+        'Issue Tranche 1 (up to ₹15,000, 12m) on PM SVANidhi-modeled trust ladder; auto-trigger Tranche 2 (₹25,000) eligibility after 6 clean cycles.'
+      );
+    }
     if (koNachTriggered) {
       structuringGuardrails.push(
-        'Mandatory 6-month starter pilot tranche (≤₹40,000) with zero-bounce graduation requirement before limit step-up.'
+        'Mandatory 6-month starter pilot tranche with zero-bounce graduation requirement before limit step-up.'
       );
     }
     if (minToAvgBalanceRatio < 0.25) {
       structuringGuardrails.push(
-        'Set debit execution date 24h after peak weekly UPI settlement window to protect thin liquidity buffer.'
+        'Set debit execution date 24h after peak weekly cash-deposit or UPI settlement window to protect thin liquidity buffer.'
       );
     }
     if (inflowOutflowCv > 0.34) {
       structuringGuardrails.push(
         'Enable automated lean-week grace window (up to 3 days) without penal bounce charges to prevent NACH spiral.'
-      );
-    }
-    if (uniqueUpiPayersPerMonth < 50) {
-      structuringGuardrails.push(
-        'Review top-5 counterparty concentration in AA bank statement summary before second-tranche step-up.'
       );
     }
   }
@@ -513,18 +692,42 @@ export function evaluateMSMECredit(
   // ---------------------------------------------------------------------------
   const borrowerImprovementSteps: BorrowerImprovementStep[] = [];
 
+  if (starterTrancheActive) {
+    borrowerImprovementSteps.push({
+      title: 'Complete 6 on-time weekly payments to unlock Tranche 2 (₹25,000)',
+      detail:
+        'Your Cash-Heavy profile starts on the ₹15,000 Starter Tranche. Clean repayment builds formal credit history and unlocks ₹25,000 → ₹50,000 automatically.',
+      targetMetric: '₹15k → ₹25k → ₹50k',
+    });
+  }
+
   if (nachBounces6m > 0) {
     borrowerImprovementSteps.push({
       title: 'Maintain zero auto-debit (NACH) bounces for the next 6 months',
-      detail: `Your bank statement currently shows ${nachBounces6m} NACH ${nachBounces6m === 1 ? 'bounce' : 'bounces'}. Keeping sufficient balance before scheduled debit dates lifts knock-out caps and improves your interest band.`,
+      detail: `Your bank statement currently shows ${nachBounces6m} NACH ${nachBounces6m === 1 ? 'bounce' : 'bounces'}. Keeping sufficient balance before scheduled debit dates lifts knock-out caps.`,
       targetMetric: 'Target: 0 bounces / 6m',
+    });
+  }
+
+  if (isCashHeavyProfile) {
+    borrowerImprovementSteps.push({
+      title: 'Adopt a merchant UPI QR alongside steady bank cash deposits',
+      detail: `Growing verified UPI payers above 25/month transitions you from the Starter Tranche cap to full EMI-based working capital limits.`,
+      targetMetric: 'Target: 25+ UPI payers/mo',
+    });
+  } else if (uniqueUpiPayersPerMonth < 80) {
+    borrowerImprovementSteps.push({
+      title: 'Route more walk-in customers through your business UPI QR',
+      detail:
+        'Growing verified monthly unique UPI payers beyond 80 reduces buyer-concentration risk and strengthens your Payer Diversity score.',
+      targetMetric: 'Target: 80+ payers/mo',
     });
   }
 
   if (minToAvgBalanceRatio < 0.35) {
     borrowerImprovementSteps.push({
       title: 'Keep a steadier minimum balance in your business account',
-      detail: `Your minimum monthly balance is ${Math.round(minToAvgBalanceRatio * 100)}% of your average balance. Retaining a 35%+ liquidity cushion directly boosts the 25%-weighted Liquidity pillar.`,
+      detail: `Your minimum monthly balance is ${Math.round(minToAvgBalanceRatio * 100)}% of your average balance. Retaining a 35%+ liquidity cushion directly lifts your score.`,
       targetMetric: 'Target: ≥ 35% cushion',
     });
   }
@@ -537,18 +740,10 @@ export function evaluateMSMECredit(
     });
   }
 
-  if (uniqueUpiPayersPerMonth < 80) {
-    borrowerImprovementSteps.push({
-      title: 'Route more walk-in customers through your business UPI QR',
-      detail: `Growing verified monthly unique UPI payers beyond 80 reduces buyer-concentration risk and increases your Payer Diversity score.`,
-      targetMetric: 'Target: 80+ payers/mo',
-    });
-  }
-
   if (borrowerImprovementSteps.length < 2) {
     borrowerImprovementSteps.push({
-      title: 'Keep your verified account active through the loan cycle',
-      detail: `Continuing clean UPI collections and keeping ${formatINR(remainingMonthlyBuffer)}/mo free after repayments unlocks faster step-up limits on renewal.`,
+      title: 'Preserve your monthly operating buffer through the loan term',
+      detail: `Keeping ${formatINR(remainingMonthlyBuffer)}/mo free after loan repayments protects working capital and speeds up renewal step-ups.`,
       targetMetric: 'Step-up track',
     });
   }
@@ -558,6 +753,10 @@ export function evaluateMSMECredit(
     monthlyNetSurplus,
     expenseCoverageRatio,
     operatingMarginPercent,
+    isCashHeavyProfile,
+    profileTag,
+    weightingModeLabel,
+    starterTrancheLadder,
     stabilityScore,
     readinessTier,
     pillars,

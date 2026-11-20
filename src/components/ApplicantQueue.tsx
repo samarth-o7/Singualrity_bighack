@@ -108,7 +108,7 @@ export function ApplicantQueue({
                 }`}
               >
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                     <span className="font-mono text-[11px] font-medium text-slate-500 tabular-nums">
                       {application.referenceCode}
                     </span>
@@ -140,6 +140,10 @@ export function ApplicantQueue({
                     </span>
                     {assessment.knockOutTriggered ? (
                       <span className="font-semibold text-red-700">Knock-Out Cap</span>
+                    ) : assessment.isCashHeavyProfile ? (
+                      <span className="font-semibold text-teal-800">
+                        Cash-Heavy · Tranche 1
+                      </span>
                     ) : (
                       <span className="font-mono text-emerald-700 tabular-nums">
                         Limit {formatCompactINR(assessment.recommendedLoanAmount)}

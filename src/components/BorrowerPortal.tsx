@@ -7,7 +7,10 @@ import {
 } from '../types/credit';
 import { evaluateMSMECredit } from '../utils/creditModel';
 import { formatCompactINR, formatINR } from '../utils/format';
+import { AiExplanationCard } from './AiExplanationCard';
+import { CashFlowChart } from './CashFlowChart';
 import { getReadinessDescriptor, StabilityGauge } from './StabilityGauge';
+import { StarterTrancheLadderCard } from './StarterTrancheLadderCard';
 
 interface BorrowerPortalProps {
   profiles: SyntheticMSMEProfile[];
@@ -24,7 +27,7 @@ interface BorrowerPortalProps {
   onRevokeConsent: () => void;
 }
 
-const QUICK_LOAN_AMOUNTS = [50000, 100000, 150000, 250000];
+const QUICK_LOAN_AMOUNTS = [15000, 50000, 100000, 150000];
 
 export function BorrowerPortal({
   profiles,
@@ -53,6 +56,9 @@ export function BorrowerPortal({
   const {
     effectiveSignals,
     monthlyNetSurplus,
+    isCashHeavyProfile,
+    profileTag,
+    starterTrancheLadder,
     stabilityScore,
     readinessTier,
     knockOutTriggered,
@@ -82,12 +88,6 @@ export function BorrowerPortal({
         ? 'week'
         : 'month';
 
-  const emiShareOfSurplus =
-    monthlyNetSurplus > 0
-      ? Math.min(100, Math.round((estimatedMonthlyEmi / monthlyNetSurplus) * 100))
-      : 0;
-  const bufferShareOfSurplus = Math.max(0, 100 - emiShareOfSurplus);
-
   const handleLoanInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
     if (raw === '') {
@@ -113,6 +113,8 @@ export function BorrowerPortal({
       onGrantConsent();
     }
   };
+
+  const snapshotKey = `borrower-${activeProfile.id}-${requestedLoan}-${stabilityScore}`;
 
   return (
     <div className={isMobileFrame ? 'space-y-4' : 'mx-auto max-w-[1320px]'}>
@@ -141,8 +143,9 @@ export function BorrowerPortal({
                 : 'mt-1 text-sm text-slate-600'
             }
           >
-            No manual financial self-reporting. Grant 10-minute read-only RBI Account Aggregator
-            consent so verified cash-flow ratios are derived directly in memory.
+            No manual financial sliders. Grant 10-minute read-only RBI Account Aggregator consent
+            so verified cash-flow ratios—including cash-heavy vendor deposits &amp; BBPS bills—are
+            computed in memory.
           </p>
         </div>
         {!isMobileFrame && (
@@ -178,8 +181,8 @@ export function BorrowerPortal({
               <span className="text-[11px] font-medium text-amber-800">Synthetic personas</span>
             </div>
             <p className="mt-0.5 text-xs text-slate-500">
-              Choose one of 4 synthetic Indian MSME accounts to simulate RBI AA + BBPS + Udyam
-              data fetch
+              Choose a synthetic Indian MSME profile—including a Cash-Heavy Vendor—to simulate RBI
+              AA + BBPS + Udyam consent
             </p>
 
             <div
@@ -191,6 +194,7 @@ export function BorrowerPortal({
             >
               {profiles.map((profile) => {
                 const isSelected = profile.id === selectedProfileId;
+                const isCashFirst = profile.signals.uniqueUpiPayersPerMonth < 25;
                 return (
                   <button
                     key={profile.id}
@@ -203,13 +207,20 @@ export function BorrowerPortal({
                         : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50'
                     }`}
                   >
-                    <span className="text-sm font-semibold text-slate-900">
-                      {profile.label}
-                    </span>
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <span className="text-sm font-semibold text-slate-900 truncate">
+                        {profile.label}
+                      </span>
+                      {isCashFirst && (
+                        <span className="shrink-0 font-mono text-[10px] font-semibold text-teal-800">
+                          Outflow-Verified
+                        </span>
+                      )}
+                    </div>
                     <span className="mt-0.5 w-full truncate text-xs text-slate-600">
                       {profile.businessName}
                     </span>
-                    <span className="mt-1 font-mono text-[11px] text-slate-500 truncate w-full">
+                    <span className="mt-1 w-full truncate font-mono text-[11px] text-slate-500">
                       {profile.location}
                     </span>
                   </button>
@@ -237,8 +248,7 @@ export function BorrowerPortal({
                 2. Enter requested loan amount
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Applicants only enter loan need; all financial signals are fetched read-only via
-                RBI AA
+                Applicants enter only their credit need; all financial ratios are fetched read-only
               </p>
             </div>
 
@@ -285,7 +295,7 @@ export function BorrowerPortal({
                 })}
               </div>
               <p className="mt-1.5 font-mono text-[11px] text-slate-400 tabular-nums">
-                Range: ₹10,000 – ₹5,00,000 (working capital micro-MSME limit)
+                Range: ₹10,000 – ₹5,00,000 (cash-heavy profiles start on ₹15,000 Starter Tranche)
               </p>
             </div>
           </div>
@@ -294,7 +304,6 @@ export function BorrowerPortal({
 
           {/* Step 3: Privacy & Zero-Retention Badge + Simulated RBI AA Consent Action */}
           <div className="space-y-4 rounded-b-xl bg-slate-50/70 p-5 sm:p-6">
-            {/* Explicit Privacy & Zero-Retention Badge */}
             <div
               className="flex items-start gap-2.5 rounded-lg border border-teal-200 bg-teal-50/70 p-3.5"
               role="note"
@@ -306,7 +315,7 @@ export function BorrowerPortal({
               />
               <div className="space-y-0.5">
                 <p className="text-xs font-semibold text-teal-950">
-                  Privacy & Zero-Retention Guarantee
+                  Privacy &amp; Zero-Retention Guarantee
                 </p>
                 <p className="text-xs leading-relaxed text-teal-900">
                   Encrypted, revocable read-only consent. Only derived financial ratios are
@@ -368,7 +377,7 @@ export function BorrowerPortal({
           </div>
         </form>
 
-        {/* Right: Verified Signals, Deterministic Score & Fair Loan Terms */}
+        {/* Right: Verified Signals, Deterministic Score, Chart, Tranche Ladder & AI Explanation */}
         <div
           className={
             isMobileFrame
@@ -377,7 +386,6 @@ export function BorrowerPortal({
           }
         >
           {!consentGranted ? (
-            /* Pre-Consent State: Explain Anti-Gaming AA Signals Before Unlocking */
             <div className="p-6 sm:p-8">
               <div className="flex items-center gap-2.5 text-teal-800">
                 <Lock className="h-5 w-5 shrink-0" aria-hidden="true" />
@@ -386,9 +394,11 @@ export function BorrowerPortal({
                 </h2>
               </div>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                To keep credit underwriting fair and tamper-resistant, manual financial sliders are
-                disabled. Grant 10-minute simulated RBI AA consent on the left to compute your
-                deterministic Stability Score and loan terms from 6 system-verified signals:
+                Grant 10-minute simulated RBI AA consent on the left to compute your deterministic
+                Stability Score, cash-flow capacity chart, and fair loan terms from tamper-resistant
+                signals. Cash-heavy vendors with thin UPI trails are automatically evaluated via
+                BBPS utility timeliness, bank cash-deposit regularity, and Udyam vintage so they are
+                never unfairly rejected.
               </p>
 
               <dl
@@ -397,45 +407,33 @@ export function BorrowerPortal({
                 }`}
               >
                 <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <dt className="font-semibold text-slate-900">UPI Merchant Payer Diversity</dt>
+                  <dt className="font-semibold text-slate-900">UPI Payer Diversity / Cash Deposits</dt>
                   <dd className="mt-0.5 text-slate-600">
-                    Unique monthly UPI counterparties verifying genuine retail footfall
+                    Dynamic weighting shifts from UPI payers to bank cash-deposit regularity for
+                    cash-first vendors
                   </dd>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
                   <dt className="font-semibold text-slate-900">6-Month Bank NACH Bounces</dt>
                   <dd className="mt-0.5 text-slate-600">
-                    Auto-debit dishonor count used for hard knock-out safety guardrails
+                    Auto-debit dishonor history governing hard knock-out safety caps
                   </dd>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <dt className="font-semibold text-slate-900">Cash-Flow Stability (CV)</dt>
+                  <dt className="font-semibold text-slate-900">Cash-Flow Stability &amp; Liquidity</dt>
                   <dd className="mt-0.5 text-slate-600">
-                    Inflow-to-outflow coefficient of variation across bank cycles
+                    Inflow-to-outflow CV and minimum-to-average bank balance cushion
                   </dd>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <dt className="font-semibold text-slate-900">Liquidity Cushion Ratio</dt>
+                  <dt className="font-semibold text-slate-900">BBPS Utility Bills &amp; Udyam Vintage</dt>
                   <dd className="mt-0.5 text-slate-600">
-                    Minimum vs. average monthly bank balance held as operating buffer
-                  </dd>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <dt className="font-semibold text-slate-900">BBPS Utility Bill Timeliness</dt>
-                  <dd className="mt-0.5 text-slate-600">
-                    Electricity & recurring bill on-time payment percentage via BBPS
-                  </dd>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                  <dt className="font-semibold text-slate-900">Udyam / GST Business Vintage</dt>
-                  <dd className="mt-0.5 text-slate-600">
-                    Verified months of registered enterprise operation
+                    Verified bill timeliness and formal enterprise continuity
                   </dd>
                 </div>
               </dl>
             </div>
           ) : (
-            /* Post-Consent State: Fetched Tamper-Resistant Signals + Deterministic Assessment */
             <>
               {/* Top Hero: Stability Score & Readiness Tier */}
               <div className="p-5 sm:p-6">
@@ -447,10 +445,22 @@ export function BorrowerPortal({
                   }`}
                 >
                   <div className={isMobileFrame ? 'order-2 w-full' : 'min-w-0 flex-1'}>
-                    <p className="text-xs font-medium text-slate-500">
-                      Deterministic Stability Score · Readiness Tier:{' '}
-                      <span className="font-semibold text-slate-900">{readinessTier}</span>
-                    </p>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                      <span className="font-medium text-slate-500">
+                        Readiness Tier:{' '}
+                        <strong className="font-semibold text-slate-900">{readinessTier}</strong>
+                      </span>
+                      <span aria-hidden="true" className="text-slate-300">
+                        ·
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          isCashHeavyProfile ? 'text-teal-800' : 'text-slate-600'
+                        }`}
+                      >
+                        {profileTag}
+                      </span>
+                    </div>
                     <h2 className="mt-1 text-lg font-bold tracking-tight text-slate-900">
                       {underwritingDecision}
                     </h2>
@@ -493,7 +503,9 @@ export function BorrowerPortal({
                     <p className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
                       {isDeclined
                         ? 'Non-positive surplus'
-                        : `${Math.round(loanCoverageRatio * 100)}% of ${formatINR(requestedLoan)}`}
+                        : starterTrancheLadder.isActive
+                          ? 'Starter Tranche 1 Cap'
+                          : `${Math.round(loanCoverageRatio * 100)}% of ${formatINR(requestedLoan)}`}
                     </p>
                   </div>
 
@@ -533,33 +545,52 @@ export function BorrowerPortal({
 
               <div className="border-t border-slate-200" />
 
-              {/* Fetched Tamper-Resistant Signals Ledger (Read-Only) */}
+              {/* Body Sections: Starter Tranche Ladder, Cash-Flow Chart, Signals, AI Explanation, Tips */}
               <div className="space-y-6 p-5 sm:p-6">
-                <div>
+                {/* PM SVANidhi-Modeled Starter Tranche Ladder (shown for Cash-Heavy profiles) */}
+                {starterTrancheLadder.isActive && (
+                  <StarterTrancheLadderCard
+                    ladder={starterTrancheLadder}
+                    recommendedLoanAmount={recommendedLoanAmount}
+                    isMobileFrame={isMobileFrame}
+                  />
+                )}
+
+                {/* Cash-Flow & Repayment Capacity Bar Chart */}
+                <CashFlowChart assessment={assessment} />
+
+                {/* Fetched Tamper-Resistant Signals Ledger (Read-Only) */}
+                <div className="border-t border-slate-100 pt-5">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <h3 className="text-sm font-semibold text-slate-900">
                       Fetched tamper-resistant signals (Read-Only)
                     </h3>
                     <span className="text-[11px] font-medium text-teal-800">
-                      Simulated RBI AA + BBPS + Udyam
+                      {activeProfile.aaSourceLabel}
                     </span>
                   </div>
 
                   <dl
-                    className={`mt-3 grid gap-3 ${
-                      isMobileFrame ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'
+                    className={`mt-3 grid gap-2.5 ${
+                      isMobileFrame ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'
                     }`}
                   >
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <dt className="text-[11px] text-slate-500">Unique UPI payers / mo</dt>
-                      <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-                        {effectiveSignals.uniqueUpiPayersPerMonth} payers
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">Unique UPI payers</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                        {effectiveSignals.uniqueUpiPayersPerMonth}/mo
                       </dd>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">Cash deposit reg.</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                        {effectiveSignals.cashDepositRegularity}/100
+                      </dd>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
                       <dt className="text-[11px] text-slate-500">NACH bounces (6m)</dt>
                       <dd
-                        className={`mt-0.5 font-mono text-sm font-semibold tabular-nums ${
+                        className={`mt-0.5 font-mono text-xs font-semibold tabular-nums ${
                           effectiveSignals.nachBounces6m > 2
                             ? 'text-red-700'
                             : effectiveSignals.nachBounces6m > 0
@@ -570,111 +601,78 @@ export function BorrowerPortal({
                         {effectiveSignals.nachBounces6m} bounces
                       </dd>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <dt className="text-[11px] text-slate-500">Cash-flow CV</dt>
-                      <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-                        {effectiveSignals.inflowOutflowCv.toFixed(2)}
-                      </dd>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <dt className="text-[11px] text-slate-500">Min / avg balance</dt>
-                      <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
-                        {Math.round(effectiveSignals.minToAvgBalanceRatio * 100)}%
-                      </dd>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-                      <dt className="text-[11px] text-slate-500">BBPS bills on-time</dt>
-                      <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">BBPS on-time</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
                         {effectiveSignals.bbpsOnTimeRate}%
                       </dd>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">Cash-flow CV</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                        {effectiveSignals.inflowOutflowCv.toFixed(2)}
+                      </dd>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">Min / avg balance</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                        {Math.round(effectiveSignals.minToAvgBalanceRatio * 100)}%
+                      </dd>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
                       <dt className="text-[11px] text-slate-500">Udyam vintage</dt>
-                      <dd className="mt-0.5 font-mono text-sm font-semibold text-slate-900 tabular-nums">
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
                         {effectiveSignals.businessVintageMonths} mos
                       </dd>
                     </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+                      <dt className="text-[11px] text-slate-500">Buffer after EMI</dt>
+                      <dd className="mt-0.5 font-mono text-xs font-semibold text-emerald-700 tabular-nums">
+                        {formatINR(remainingMonthlyBuffer)}/mo
+                      </dd>
+                    </div>
                   </dl>
-
-                  {/* Verified Cash Flow Strip */}
-                  <div className="mt-3 grid grid-cols-3 gap-3 border-t border-slate-100 pt-3 text-xs">
-                    <div>
-                      <p className="text-[11px] text-slate-500">Verified monthly inflow</p>
-                      <p className="mt-0.5 font-mono font-semibold text-slate-900 tabular-nums">
-                        {formatINR(effectiveSignals.avgMonthlyInflow)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-slate-500">Verified monthly outflow</p>
-                      <p className="mt-0.5 font-mono font-semibold text-slate-900 tabular-nums">
-                        {formatINR(effectiveSignals.avgMonthlyOutflow)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-slate-500">Monthly net surplus</p>
-                      <p
-                        className={`mt-0.5 font-mono font-semibold tabular-nums ${
-                          monthlyNetSurplus <= 0 ? 'text-red-700' : 'text-emerald-700'
-                        }`}
-                      >
-                        {monthlyNetSurplus < 0
-                          ? `-${formatINR(Math.abs(monthlyNetSurplus))}`
-                          : formatINR(monthlyNetSurplus)}
-                      </p>
-                    </div>
-                  </div>
                 </div>
 
-                {/* Repayment Comfort Summary */}
-                {!isDeclined && (
-                  <div className="border-t border-slate-100 pt-5">
-                    <h3 className="text-sm font-semibold text-slate-900">
-                      Repayment comfort & cash buffer
-                    </h3>
+                {/* Explanation-Only Read-Only AI Layer */}
+                <div className="border-t border-slate-100 pt-5">
+                  <AiExplanationCard
+                    role="borrower"
+                    businessName={activeProfile.businessName}
+                    businessType={activeProfile.label}
+                    location={activeProfile.location}
+                    assessment={assessment}
+                    snapshotKey={snapshotKey}
+                  />
+                </div>
+
+                {/* Deterministic Plain-Language Steps & Repayment Summary */}
+                <div className="border-t border-slate-100 pt-5">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Deterministic improvement &amp; step-up checklist
+                  </h3>
+                  {!isDeclined && (
                     <p className="mt-1 text-xs leading-relaxed text-slate-600">
                       Estimated monthly EMI of{' '}
                       <strong className="font-mono font-semibold text-slate-900 tabular-nums">
                         {formatINR(estimatedMonthlyEmi)}
                       </strong>{' '}
-                      uses {emiShareOfSurplus}% of your verified monthly surplus, leaving{' '}
+                      leaves{' '}
                       <strong className="font-mono font-semibold text-emerald-700 tabular-nums">
                         {formatINR(remainingMonthlyBuffer)}/mo
                       </strong>{' '}
-                      with your business. {repaymentRationale}
-                      {isRightSized && (
+                      from your {formatINR(Math.max(0, monthlyNetSurplus))} verified surplus.{' '}
+                      {repaymentRationale}
+                      {isRightSized && !starterTrancheLadder.isActive && (
                         <>
                           {' '}
-                          Your limit was right-sized to{' '}
-                          <span className="font-mono tabular-nums">
-                            {formatINR(recommendedLoanAmount)}
-                          </span>{' '}
-                          so debt service stays within the safe {maxEmiRatioPercent}% ceiling.
+                          Exposure was right-sized to stay safely inside the {maxEmiRatioPercent}%
+                          EMI ceiling.
                         </>
                       )}
                     </p>
+                  )}
 
-                    <div
-                      className="mt-3 flex h-2 w-full overflow-hidden rounded-full bg-slate-100"
-                      role="img"
-                      aria-label={`${emiShareOfSurplus}% of monthly surplus toward EMI, ${bufferShareOfSurplus}% retained as cash buffer`}
-                    >
-                      <div
-                        className="bg-teal-700 transition-all duration-300"
-                        style={{ width: `${emiShareOfSurplus}%` }}
-                      />
-                      <div
-                        className="bg-emerald-500/75 transition-all duration-300"
-                        style={{ width: `${bufferShareOfSurplus}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Plain-Language Improvement Steps */}
-                <div className="border-t border-slate-100 pt-5">
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    Plain-language steps to improve your score & terms
-                  </h3>
                   <ul className="mt-3 divide-y divide-slate-100">
                     {borrowerImprovementSteps.map((step) => (
                       <li key={step.title} className="py-2.5 first:pt-0 last:pb-0">
@@ -697,7 +695,8 @@ export function BorrowerPortal({
 
               <div className="rounded-b-xl border-t border-slate-200 bg-slate-50/70 px-5 py-3 text-[11px] leading-relaxed text-slate-500 sm:px-6">
                 All merchant metrics above are synthetic sample data simulating RBI Account
-                Aggregators, BBPS, and Udyam APIs. Scoring is 100% deterministic TypeScript.
+                Aggregators, BBPS, and Udyam APIs. Scoring and loan sizing are 100% deterministic
+                TypeScript.
               </div>
             </>
           )}
