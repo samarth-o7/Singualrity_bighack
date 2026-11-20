@@ -1,24 +1,22 @@
 import {
-  BorrowerActionTip,
+  BorrowerImprovementStep,
   CreditAssessment,
-  FluctuationLevel,
-  KeySignal,
-  MSMEInputs,
+  KnockOutRuleResult,
+  PolicyReasonCode,
   ReadinessTier,
   RepaymentSchedule,
-  RiskFlag,
-  VerificationCheck,
-  VerificationStatus,
+  ScorecardPillar,
+  StressTestScenario,
+  VerifiedMSMESignals,
 } from '../types/credit';
 import { formatINR } from './format';
 
-const FLUCTUATION_SCORES: Record<FluctuationLevel, number> = {
-  Low: 92,
-  Medium: 64,
-  High: 32,
+export const DEFAULT_STRESS_SCENARIO: StressTestScenario = {
+  inflowDipPercent: 0,
+  additionalNachBounces: 0,
+  outflowShockPercent: 0,
+  bbpsDropPoints: 0,
 };
-
-const WEEKS_PER_MONTH = 4.33;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -29,415 +27,363 @@ function roundToNearest(value: number, step: number): number {
 }
 
 /**
- * Deterministic cash-flow underwriting engine for Problem F2 ("Credit for the credit-invisible").
- * Computes cash-flow stability, cross-signal verification & data confidence, and fair loan terms.
+ * Applies optional lender-only downside stress shocks deterministically to AA-fetched signals.
  */
-export function evaluateCreditProfile(inputs: MSMEInputs): CreditAssessment {
-  const {
-    dailySales,
-    operatingDaysPerWeek,
-    upiShare,
-    cashFlowFluctuation,
-    paymentConsistency,
-    monthlyFixedExpenses,
-    requestedLoan,
-  } = inputs;
+export function applyStressTest(
+  base: VerifiedMSMESignals,
+  stress?: StressTestScenario
+): VerifiedMSMESignals {
+  if (!stress) return { ...base };
 
-  // ---------------------------------------------------------------------------
-  // 1. Cash-Flow & Expense Coverage
-  // ---------------------------------------------------------------------------
-  const monthlyOperatingDays = operatingDaysPerWeek * WEEKS_PER_MONTH;
-  const monthlyRevenue = Math.round(dailySales * monthlyOperatingDays);
-  const monthlyNetSurplus = monthlyRevenue - monthlyFixedExpenses;
-  const positiveSurplus = Math.max(0, monthlyNetSurplus);
+  const dipFactor = clamp(1 - stress.inflowDipPercent / 100, 0.3, 1);
+  const outflowFactor = clamp(1 + stress.outflowShockPercent / 100, 1, 1.5);
 
-  const expenseCoverageRatio =
-    monthlyFixedExpenses > 0
-      ? Number((monthlyRevenue / monthlyFixedExpenses).toFixed(2))
-      : monthlyRevenue > 0
-        ? 10
-        : 0;
+  const stressedInflow = Math.round(base.avgMonthlyInflow * dipFactor);
+  const stressedOutflow = Math.round(base.avgMonthlyOutflow * outflowFactor);
 
-  const operatingMarginPercent =
-    monthlyRevenue > 0 ? clamp((monthlyNetSurplus / monthlyRevenue) * 100, -100, 100) : 0;
-
-  const expenseRatio = monthlyRevenue > 0 ? monthlyFixedExpenses / monthlyRevenue : 1;
-
-  // ---------------------------------------------------------------------------
-  // 2. Stability Sub-Scores & Key Signals (0–100)
-  // ---------------------------------------------------------------------------
-  // A. Payment Consistency (30%)
-  const consistencyScore = clamp(Math.round(paymentConsistency), 0, 100);
-
-  // B. Cash-Flow Fluctuation & Trading Cadence (25%)
-  const cadenceAdjustment =
-    operatingDaysPerWeek >= 6 ? 6 : operatingDaysPerWeek >= 5 ? 2 : -8;
-  const fluctuationScore = clamp(
-    Math.round(FLUCTUATION_SCORES[cashFlowFluctuation] + cadenceAdjustment),
-    10,
-    100
+  // Lean-month inflow dips increase cash-flow CV and compress min-to-avg balance cushion
+  const cvStressBump = (stress.inflowDipPercent / 100) * 0.32 + (stress.outflowShockPercent / 100) * 0.12;
+  const balanceCompression = clamp(
+    1 - (stress.inflowDipPercent / 100) * 0.75 - (stress.outflowShockPercent / 100) * 0.4,
+    0.2,
+    1
   );
 
-  // C. Expense Coverage & Surplus Cushion (25%)
-  // 1.0x coverage = breakeven (15 pts), 2.0x = ~68 pts, 3.0x+ = 95-100 pts
-  const expenseCoverageScore =
-    monthlyNetSurplus <= 0
-      ? clamp(Math.round(expenseCoverageRatio * 18), 5, 18)
-      : clamp(Math.round(20 + Math.min(expenseCoverageRatio - 1, 2.4) * 33.3), 20, 100);
+  return {
+    uniqueUpiPayersPerMonth: Math.max(
+      1,
+      Math.round(base.uniqueUpiPayersPerMonth * (1 - (stress.inflowDipPercent / 100) * 0.45))
+    ),
+    nachBounces6m: Math.max(0, Math.round(base.nachBounces6m + stress.additionalNachBounces)),
+    inflowOutflowCv: Number(clamp(base.inflowOutflowCv + cvStressBump, 0.05, 0.95).toFixed(2)),
+    minToAvgBalanceRatio: Number(
+      clamp(base.minToAvgBalanceRatio * balanceCompression, 0.02, 0.95).toFixed(2)
+    ),
+    bbpsOnTimeRate: clamp(Math.round(base.bbpsOnTimeRate - stress.bbpsDropPoints), 0, 100),
+    businessVintageMonths: base.businessVintageMonths,
+    avgMonthlyInflow: stressedInflow,
+    avgMonthlyOutflow: stressedOutflow,
+  };
+}
 
-  // D. UPI Digital Verifiability (20%)
-  const upiScore = clamp(Math.round(20 + upiShare * 0.8), 15, 100);
+/**
+ * 100% Deterministic Financial Underwriting Engine (Zero LLM in Math).
+ * Evaluates thin-file Indian MSMEs strictly from 6 tamper-resistant signals fetched via
+ * Simulated RBI Account Aggregator + BBPS + Udyam, with Hard Knock-Out Rules,
+ * a 5-pillar weighted scorecard (25/25/20/20/10), formula-driven EMI loan sizing,
+ * and explicit Policy Reason Codes.
+ */
+export function evaluateMSMECredit(
+  baseSignals: VerifiedMSMESignals,
+  requestedLoan: number,
+  stressScenario?: StressTestScenario
+): CreditAssessment {
+  const effectiveSignals = applyStressTest(baseSignals, stressScenario);
+  const {
+    uniqueUpiPayersPerMonth,
+    nachBounces6m,
+    inflowOutflowCv,
+    minToAvgBalanceRatio,
+    bbpsOnTimeRate,
+    businessVintageMonths,
+    avgMonthlyInflow,
+    avgMonthlyOutflow,
+  } = effectiveSignals;
 
-  const keySignals: KeySignal[] = [
+  // ---------------------------------------------------------------------------
+  // 1. Verified Cash Flow & Surplus
+  // ---------------------------------------------------------------------------
+  const monthlyNetSurplus = avgMonthlyInflow - avgMonthlyOutflow;
+  const positiveSurplus = Math.max(0, monthlyNetSurplus);
+  const expenseCoverageRatio =
+    avgMonthlyOutflow > 0
+      ? Number((avgMonthlyInflow / avgMonthlyOutflow).toFixed(2))
+      : avgMonthlyInflow > 0
+        ? 10
+        : 0;
+  const operatingMarginPercent =
+    avgMonthlyInflow > 0
+      ? clamp((monthlyNetSurplus / avgMonthlyInflow) * 100, -100, 100)
+      : 0;
+
+  // ---------------------------------------------------------------------------
+  // 2. Hard Knock-Out Rules
+  // ---------------------------------------------------------------------------
+  const koNachTriggered = nachBounces6m > 2;
+  const koSurplusTriggered = monthlyNetSurplus <= 0;
+  const knockOutTriggered = koNachTriggered || koSurplusTriggered;
+
+  const knockOutRules: KnockOutRuleResult[] = [
     {
-      id: 'payment-consistency',
-      label: 'Payment & bill consistency',
-      weightPercent: 30,
-      rawDisplay: `${Math.round(paymentConsistency)}% on-time`,
-      score: consistencyScore,
-      contribution: Number((consistencyScore * 0.3).toFixed(1)),
-      status: consistencyScore >= 80 ? 'Positive' : consistencyScore >= 60 ? 'Neutral' : 'Watch',
-      detail: 'Timeliness across rent, electricity bills, and recurring supplier invoices.',
+      code: 'KO_NACH_BOUNCES_GT_2',
+      label: 'NACH / Auto-Debit Bounce Ceiling',
+      threshold: '≤ 2 bounces in 6 months',
+      observed: `${nachBounces6m} ${nachBounces6m === 1 ? 'bounce' : 'bounces'} (6m)`,
+      triggered: koNachTriggered,
+      actionTaken: koNachTriggered
+        ? 'Forced Watchlist tier · Max EMI capped at 18% of surplus · 6-month pilot cap'
+        : 'Pass — within acceptable mandate dishonor limit',
     },
     {
-      id: 'expense-coverage',
-      label: 'Expense coverage & surplus',
-      weightPercent: 25,
-      rawDisplay:
-        monthlyNetSurplus > 0
-          ? `${expenseCoverageRatio.toFixed(2)}x · ${Math.round(operatingMarginPercent)}% margin`
-          : `${expenseCoverageRatio.toFixed(2)}x · Deficit`,
-      score: expenseCoverageScore,
-      contribution: Number((expenseCoverageScore * 0.25).toFixed(1)),
-      status:
-        expenseCoverageScore >= 72 ? 'Positive' : expenseCoverageScore >= 48 ? 'Neutral' : 'Watch',
-      detail:
-        monthlyNetSurplus > 0
-          ? `${formatINR(monthlyNetSurplus)}/mo net surplus remaining after fixed overheads.`
-          : `Fixed expenses exceed estimated monthly sales by ${formatINR(Math.abs(monthlyNetSurplus))}.`,
-    },
-    {
-      id: 'cash-flow-steadiness',
-      label: 'Cash-flow steadiness',
-      weightPercent: 25,
-      rawDisplay: `${cashFlowFluctuation} var · ${operatingDaysPerWeek}d/wk`,
-      score: fluctuationScore,
-      contribution: Number((fluctuationScore * 0.25).toFixed(1)),
-      status: fluctuationScore >= 75 ? 'Positive' : fluctuationScore >= 55 ? 'Neutral' : 'Watch',
-      detail: 'Resilience to week-to-week sales volatility and trading regularity.',
-    },
-    {
-      id: 'upi-share',
-      label: 'UPI digital payment share',
-      weightPercent: 20,
-      rawDisplay: `${Math.round(upiShare)}% UPI`,
-      score: upiScore,
-      contribution: Number((upiScore * 0.2).toFixed(1)),
-      status: upiScore >= 72 ? 'Positive' : upiScore >= 50 ? 'Neutral' : 'Watch',
-      detail: 'Fraction of turnover independently observable through UPI merchant settlements.',
+      code: 'KO_NON_POSITIVE_SURPLUS',
+      label: 'Positive Verified Monthly Net Surplus',
+      threshold: '> ₹0 monthly net surplus',
+      observed:
+        monthlyNetSurplus < 0
+          ? `-${formatINR(Math.abs(monthlyNetSurplus))}/mo`
+          : `${formatINR(monthlyNetSurplus)}/mo`,
+      triggered: koSurplusTriggered,
+      actionTaken: koSurplusTriggered
+        ? 'Forced Watchlist tier · Exposure set to ₹0 until verified cash surplus turns positive'
+        : 'Pass — positive verified surplus available for debt service',
     },
   ];
 
-  const rawStability = keySignals.reduce((sum, s) => sum + s.contribution, 0);
-  const stabilityScore =
-    monthlyNetSurplus <= 0
-      ? clamp(Math.round(rawStability * 0.42), 5, 34)
-      : clamp(Math.round(rawStability), 0, 100);
+  // ---------------------------------------------------------------------------
+  // 3. 5-Pillar Weighted Scorecard (0–100)
+  //    Liquidity Cushion (25%) | Payment/Bill Discipline (25%) |
+  //    Payer Diversity (20%)   | Cash-Flow Stability (20%)     | Business Vintage (10%)
+  // ---------------------------------------------------------------------------
+
+  // Pillar 1: Liquidity Cushion (25%) — driven by minToAvgBalanceRatio + surplus buffer
+  const ratioPts = clamp((minToAvgBalanceRatio / 0.5) * 85, 8, 88);
+  const marginBonus = monthlyNetSurplus > 0 ? clamp((operatingMarginPercent / 35) * 12, 0, 12) : -10;
+  const liquiditySubScore = clamp(Math.round(ratioPts + marginBonus), 5, 100);
+  const liquidityPolicyCode =
+    minToAvgBalanceRatio >= 0.35
+      ? 'RC_LIQ_STRONG_RESERVE'
+      : minToAvgBalanceRatio >= 0.22
+        ? 'RC_LIQ_ADEQUATE_RESERVE'
+        : 'RC_LIQ_THIN_BUFFER';
+
+  // Pillar 2: Payment & Bill Discipline (25%) — BBPS timeliness (60%) + NACH cleanliness (40%)
+  const nachSubScore =
+    nachBounces6m === 0
+      ? 100
+      : nachBounces6m === 1
+        ? 72
+        : nachBounces6m === 2
+          ? 44
+          : Math.max(5, 22 - (nachBounces6m - 3) * 8);
+  const disciplineSubScore = clamp(
+    Math.round(bbpsOnTimeRate * 0.6 + nachSubScore * 0.4),
+    5,
+    100
+  );
+  const disciplinePolicyCode =
+    nachBounces6m > 2
+      ? 'RC_DISC_NACH_BREACH'
+      : bbpsOnTimeRate >= 90 && nachBounces6m === 0
+        ? 'RC_DISC_CLEAN_MANDATES'
+        : bbpsOnTimeRate >= 80
+          ? 'RC_DISC_ACCEPTABLE_BILLS'
+          : 'RC_DISC_DELINQUENT_BILLS';
+
+  // Pillar 3: Payer Diversity (20%) — uniqueUpiPayersPerMonth (mitigates single-buyer concentration)
+  const diversitySubScore = clamp(
+    Math.round(18 + Math.min(uniqueUpiPayersPerMonth, 160) * 0.5125),
+    15,
+    100
+  );
+  const diversityPolicyCode =
+    uniqueUpiPayersPerMonth >= 90
+      ? 'RC_DIV_BROAD_CUSTOMER_BASE'
+      : uniqueUpiPayersPerMonth >= 45
+        ? 'RC_DIV_MODERATE_BASE'
+        : 'RC_DIV_HIGH_CONCENTRATION';
+
+  // Pillar 4: Cash-Flow Stability (20%) — inflowOutflowCv (lower CV = steadier cash flow)
+  // CV 0.12 -> 100, CV 0.25 -> 74, CV 0.40 -> 44, CV 0.55+ -> 14
+  const stabilitySubScore = clamp(Math.round(124 - inflowOutflowCv * 200), 10, 100);
+  const stabilityPolicyCode =
+    inflowOutflowCv <= 0.2
+      ? 'RC_STAB_STEADY_FLOWS'
+      : inflowOutflowCv <= 0.34
+        ? 'RC_STAB_SEASONAL_SWING'
+        : 'RC_STAB_VOLATILE_CV';
+
+  // Pillar 5: Business Vintage (10%) — Udyam/GST verified business age
+  // 48+ mo -> 100, 36 mo -> 85, 24 mo -> 68, 12 mo -> 48, 6 mo -> 30
+  const vintageSubScore = clamp(Math.round(22 + Math.min(businessVintageMonths, 52) * 1.5), 15, 100);
+  const vintagePolicyCode =
+    businessVintageMonths >= 36
+      ? 'RC_VINT_ESTABLISHED'
+      : businessVintageMonths >= 18
+        ? 'RC_VINT_GROWING'
+        : 'RC_VINT_EARLY_STAGE';
+
+  const pillars: ScorecardPillar[] = [
+    {
+      id: 'liquidity',
+      label: 'Liquidity Cushion',
+      weightPercent: 25,
+      observedDisplay: `${Math.round(minToAvgBalanceRatio * 100)}% min/avg bal`,
+      subScore: liquiditySubScore,
+      weightedPoints: Number((liquiditySubScore * 0.25).toFixed(1)),
+      status: liquiditySubScore >= 75 ? 'Strong' : liquiditySubScore >= 52 ? 'Moderate' : 'Watch',
+      policyCode: liquidityPolicyCode,
+      rationale: 'Minimum-to-average bank balance ratio from AA bank statements.',
+    },
+    {
+      id: 'discipline',
+      label: 'Payment / Bill Discipline',
+      weightPercent: 25,
+      observedDisplay: `${bbpsOnTimeRate}% BBPS · ${nachBounces6m} NACH`,
+      subScore: disciplineSubScore,
+      weightedPoints: Number((disciplineSubScore * 0.25).toFixed(1)),
+      status:
+        nachBounces6m > 2
+          ? 'Watch'
+          : disciplineSubScore >= 78
+            ? 'Strong'
+            : disciplineSubScore >= 55
+              ? 'Moderate'
+              : 'Watch',
+      policyCode: disciplinePolicyCode,
+      rationale: 'Combined BBPS electricity/utility timeliness and 6-month NACH dishonor history.',
+    },
+    {
+      id: 'diversity',
+      label: 'Payer Diversity',
+      weightPercent: 20,
+      observedDisplay: `${uniqueUpiPayersPerMonth} UPI payers/mo`,
+      subScore: diversitySubScore,
+      weightedPoints: Number((diversitySubScore * 0.2).toFixed(1)),
+      status: diversitySubScore >= 72 ? 'Strong' : diversitySubScore >= 48 ? 'Moderate' : 'Watch',
+      policyCode: diversityPolicyCode,
+      rationale: 'Unique monthly UPI merchant counterparties reducing buyer-concentration risk.',
+    },
+    {
+      id: 'stability',
+      label: 'Cash-Flow Stability',
+      weightPercent: 20,
+      observedDisplay: `${inflowOutflowCv.toFixed(2)} CV`,
+      subScore: stabilitySubScore,
+      weightedPoints: Number((stabilitySubScore * 0.2).toFixed(1)),
+      status: stabilitySubScore >= 74 ? 'Strong' : stabilitySubScore >= 50 ? 'Moderate' : 'Watch',
+      policyCode: stabilityPolicyCode,
+      rationale: 'Inflow-to-outflow coefficient of variation across trailing bank cycles.',
+    },
+    {
+      id: 'vintage',
+      label: 'Business Vintage',
+      weightPercent: 10,
+      observedDisplay: `${businessVintageMonths} mos (Udyam)`,
+      subScore: vintageSubScore,
+      weightedPoints: Number((vintageSubScore * 0.1).toFixed(1)),
+      status: vintageSubScore >= 72 ? 'Strong' : vintageSubScore >= 48 ? 'Moderate' : 'Watch',
+      policyCode: vintagePolicyCode,
+      rationale: 'Verified Udyam / GST enterprise continuity.',
+    },
+  ];
+
+  const rawWeightedScore = pillars.reduce((sum, pillar) => sum + pillar.weightedPoints, 0);
+  // Apply hard ceiling if negative surplus or severe NACH breach
+  let stabilityScore = clamp(Math.round(rawWeightedScore), 0, 100);
+  if (koSurplusTriggered) {
+    stabilityScore = Math.min(stabilityScore, 34);
+  } else if (koNachTriggered) {
+    stabilityScore = Math.min(stabilityScore, 49);
+  }
 
   let readinessTier: ReadinessTier = 'Watchlist';
-  if (stabilityScore >= 75 && monthlyNetSurplus > 0) {
-    readinessTier = 'Strong';
-  } else if (stabilityScore >= 55 && monthlyNetSurplus > 0) {
-    readinessTier = 'Moderate';
+  if (!knockOutTriggered) {
+    if (stabilityScore >= 75) readinessTier = 'Strong';
+    else if (stabilityScore >= 55) readinessTier = 'Moderate';
   }
 
   // ---------------------------------------------------------------------------
-  // 3. Verification & Data Confidence (Cross-Signal Checks)
+  // 4. Formula-Driven Fair Loan Sizing (EMI capped at 35%–40% of Verified Surplus)
   // ---------------------------------------------------------------------------
-  const verificationChecks: VerificationCheck[] = [];
-  // Start from digital-trail baseline: 0% UPI -> 46 base, 100% UPI -> 92 base
-  let confidenceScore = Math.round(46 + upiShare * 0.46);
-  let hasWarning = false;
-  let needsProofCount = 0;
-
-  // Check 1: UPI digital corroboration floor
-  if (upiShare >= 55) {
-    verificationChecks.push({
-      id: 'upi-corroboration',
-      label: 'UPI merchant settlement trail',
-      status: 'Passed',
-      detail: `${upiShare}% of collections pass through UPI, providing verifiable settlement evidence.`,
-      confidenceImpact: 6,
-    });
-    confidenceScore += 6;
-  } else if (upiShare >= 35) {
-    verificationChecks.push({
-      id: 'upi-corroboration',
-      label: 'UPI merchant settlement trail',
-      status: 'Needs Proof',
-      detail: `${upiShare}% UPI share leaves majority cash sales unverified; collect 3-month bank/cashbook log.`,
-      confidenceImpact: -6,
-    });
-    confidenceScore -= 6;
-    needsProofCount += 1;
-  } else {
-    verificationChecks.push({
-      id: 'upi-corroboration',
-      label: 'UPI merchant settlement trail',
-      status: 'Needs Proof',
-      detail: `Low UPI share (${upiShare}%). Turnover is largely self-reported cash; require supplier bills & shop visit.`,
-      confidenceImpact: -18,
-    });
-    confidenceScore -= 18;
-    needsProofCount += 1;
-  }
-
-  // Check 2: High sales / UPI with unusually low fixed expenses
-  const veryLowExpensesForSales = monthlyRevenue >= 75000 && expenseRatio < 0.12;
-  if (veryLowExpensesForSales) {
-    verificationChecks.push({
-      id: 'expense-plausibility',
-      label: 'Revenue-to-overhead plausibility',
-      status: 'Warning',
-      detail: `Fixed costs (${formatINR(monthlyFixedExpenses)}) are only ${Math.round(expenseRatio * 100)}% of ${formatINR(monthlyRevenue)} monthly sales. Verify unrecorded rent, staff, or inventory costs.`,
-      confidenceImpact: -22,
-    });
-    confidenceScore -= 22;
-    hasWarning = true;
-  } else if (monthlyNetSurplus <= 0) {
-    verificationChecks.push({
-      id: 'expense-plausibility',
-      label: 'Revenue-to-overhead plausibility',
-      status: 'Warning',
-      detail: `Reported fixed costs (${formatINR(monthlyFixedExpenses)}) equal or exceed estimated monthly revenue (${formatINR(monthlyRevenue)}). Reconcile actual turnover before underwriting.`,
-      confidenceImpact: -18,
-    });
-    confidenceScore -= 18;
-    hasWarning = true;
-  } else {
-    verificationChecks.push({
-      id: 'expense-plausibility',
-      label: 'Revenue-to-overhead plausibility',
-      status: 'Passed',
-      detail: `Fixed costs represent ${Math.round(expenseRatio * 100)}% of monthly sales (${expenseCoverageRatio.toFixed(2)}x coverage), consistent with micro-MSME benchmarks.`,
-      confidenceImpact: 4,
-    });
-    confidenceScore += 4;
-  }
-
-  // Check 3: High daily sales on very few operating days
-  const extremeDailyOnFewDays =
-    (dailySales >= 8000 && operatingDaysPerWeek <= 3) ||
-    (dailySales >= 12000 && operatingDaysPerWeek <= 4);
-  if (extremeDailyOnFewDays) {
-    verificationChecks.push({
-      id: 'cadence-sales-alignment',
-      label: 'Sales vs. operating cadence check',
-      status: 'Warning',
-      detail: `High daily collections (${formatINR(dailySales)}/day) across only ${operatingDaysPerWeek} operating days/week suggests lumpy bulk receipts; verify GST/invoices.`,
-      confidenceImpact: -16,
-    });
-    confidenceScore -= 16;
-    hasWarning = true;
-  } else {
-    verificationChecks.push({
-      id: 'cadence-sales-alignment',
-      label: 'Sales vs. operating cadence check',
-      status: 'Passed',
-      detail: `${formatINR(dailySales)}/day across ${operatingDaysPerWeek} days/week aligns with typical local MSME trading rhythm.`,
-      confidenceImpact: 2,
-    });
-    confidenceScore += 2;
-  }
-
-  // Check 4: High volatility paired with near-100% payment consistency
-  const volatilityConsistencyMismatch =
-    cashFlowFluctuation === 'High' && paymentConsistency >= 90;
-  if (volatilityConsistencyMismatch) {
-    verificationChecks.push({
-      id: 'volatility-consistency',
-      label: 'Volatility vs. payment consistency',
-      status: 'Warning',
-      detail: `High cash-flow fluctuation paired with ${paymentConsistency}% on-time payments is atypical; verify utility/rent receipts for hidden informal borrowing.`,
-      confidenceImpact: -20,
-    });
-    confidenceScore -= 20;
-    hasWarning = true;
-  } else if (cashFlowFluctuation === 'Low' && paymentConsistency < 55) {
-    verificationChecks.push({
-      id: 'volatility-consistency',
-      label: 'Volatility vs. payment consistency',
-      status: 'Warning',
-      detail: `Steady sales with low payment consistency (${paymentConsistency}%) indicates possible household cash leakage or unreported obligations.`,
-      confidenceImpact: -14,
-    });
-    confidenceScore -= 14;
-    hasWarning = true;
-  } else {
-    verificationChecks.push({
-      id: 'volatility-consistency',
-      label: 'Volatility vs. payment consistency',
-      status: 'Passed',
-      detail: `${cashFlowFluctuation} fluctuation is coherent with ${paymentConsistency}% recurring bill timeliness.`,
-      confidenceImpact: 3,
-    });
-    confidenceScore += 3;
-  }
-
-  // Check 5: Requested loan sizing relative to monthly net surplus
-  const loanToSurplusMultiple =
-    positiveSurplus > 0 ? requestedLoan / positiveSurplus : Infinity;
-  if (positiveSurplus <= 0 || loanToSurplusMultiple > 10) {
-    verificationChecks.push({
-      id: 'ticket-surplus-fit',
-      label: 'Requested ticket vs. net surplus',
-      status: 'Warning',
-      detail:
-        positiveSurplus <= 0
-          ? `Requested ${formatINR(requestedLoan)} cannot be supported without positive net cash surplus.`
-          : `Requested ${formatINR(requestedLoan)} is ${loanToSurplusMultiple.toFixed(1)}x monthly net surplus (${formatINR(positiveSurplus)}), exceeding prudent thin-file leverage.`,
-      confidenceImpact: -14,
-    });
-    confidenceScore -= 14;
-    hasWarning = true;
-  } else if (loanToSurplusMultiple > 6) {
-    verificationChecks.push({
-      id: 'ticket-surplus-fit',
-      label: 'Requested ticket vs. net surplus',
-      status: 'Needs Proof',
-      detail: `Requested ${formatINR(requestedLoan)} is ${loanToSurplusMultiple.toFixed(1)}x monthly net surplus; invoice or purpose verification advised.`,
-      confidenceImpact: -5,
-    });
-    confidenceScore -= 5;
-    needsProofCount += 1;
-  } else {
-    verificationChecks.push({
-      id: 'ticket-surplus-fit',
-      label: 'Requested ticket vs. net surplus',
-      status: 'Passed',
-      detail: `Requested ${formatINR(requestedLoan)} (${loanToSurplusMultiple.toFixed(1)}x monthly surplus) sits within responsible MSME working-capital bounds.`,
-      confidenceImpact: 3,
-    });
-    confidenceScore += 3;
-  }
-
-  const dataConfidence = clamp(Math.round(confidenceScore), 12, 98);
-
-  let verificationStatus: VerificationStatus = 'Partially Corroborated';
-  if (hasWarning) {
-    verificationStatus = 'Consistency Warning';
-  } else if (dataConfidence < 65 || needsProofCount > 0) {
-    verificationStatus = 'Self-Reported · Needs Proof';
-  }
-
-  // ---------------------------------------------------------------------------
-  // 4. Fair Loan Terms (Surplus + DataConfidence + RequestedLoan Capped)
-  // ---------------------------------------------------------------------------
-  // Indicative APR (% p.a.) adjusts for both stabilityScore and dataConfidence
-  let interestMinApr = 22.0;
-  let interestMaxApr = 25.5;
-  if (stabilityScore >= 82) {
-    interestMinApr = 14.0;
-    interestMaxApr = 16.0;
-  } else if (stabilityScore >= 70) {
-    interestMinApr = 15.5;
-    interestMaxApr = 18.0;
-  } else if (stabilityScore >= 55) {
-    interestMinApr = 18.0;
-    interestMaxApr = 21.0;
-  } else if (stabilityScore >= 42) {
-    interestMinApr = 20.5;
-    interestMaxApr = 23.5;
-  }
-
-  // Small risk-pricing adjustment when data is unverified or flagged
-  if (verificationStatus === 'Consistency Warning') {
-    interestMinApr = Number((interestMinApr + 1.5).toFixed(1));
-    interestMaxApr = Number((interestMaxApr + 2.0).toFixed(1));
-  } else if (verificationStatus === 'Self-Reported · Needs Proof') {
-    interestMinApr = Number((interestMinApr + 0.5).toFixed(1));
-    interestMaxApr = Number((interestMaxApr + 1.0).toFixed(1));
+  // Indicative APR (% p.a.)
+  let interestMinApr = 21.5;
+  let interestMaxApr = 24.5;
+  if (readinessTier === 'Strong' && stabilityScore >= 82) {
+    interestMinApr = 13.5;
+    interestMaxApr = 15.5;
+  } else if (readinessTier === 'Strong') {
+    interestMinApr = 15.0;
+    interestMaxApr = 17.0;
+  } else if (readinessTier === 'Moderate') {
+    interestMinApr = 17.5;
+    interestMaxApr = 20.0;
+  } else if (koNachTriggered) {
+    interestMinApr = 22.5;
+    interestMaxApr = 25.5;
   }
 
   const indicativeInterestRange = `${interestMinApr.toFixed(1)}% – ${interestMaxApr.toFixed(1)}% p.a.`;
   const midApr = (interestMinApr + interestMaxApr) / 2;
 
-  // Tenure (6–24 months) matched to ticket size, stability, and confidence
+  // Max safe monthly EMI ratio: 40% (Strong), 35% (Moderate), 25% (Watchlist), 18% (KO NACH), 0% (KO Surplus)
+  const maxEmiRatio = koSurplusTriggered
+    ? 0
+    : koNachTriggered
+      ? 0.18
+      : readinessTier === 'Strong'
+        ? 0.4
+        : readinessTier === 'Moderate'
+          ? 0.35
+          : 0.25;
+
+  const maxEmiRatioPercent = Math.round(maxEmiRatio * 100);
+  const maxSafeMonthlyEmi = Math.round(positiveSurplus * maxEmiRatio);
+
+  // Tenure (6–24 months)
   let tenureMonths = 12;
-  if (requestedLoan <= 40000 || stabilityScore < 48 || verificationStatus === 'Consistency Warning') {
+  if (knockOutTriggered || requestedLoan <= 45000) {
     tenureMonths = 6;
-  } else if (requestedLoan <= 85000) {
+  } else if (requestedLoan <= 90000) {
     tenureMonths = 9;
-  } else if (requestedLoan <= 160000) {
+  } else if (requestedLoan <= 180000) {
     tenureMonths = 12;
-  } else if (requestedLoan <= 280000) {
-    tenureMonths = stabilityScore >= 68 && dataConfidence >= 65 ? 18 : 12;
+  } else if (requestedLoan <= 320000) {
+    tenureMonths = readinessTier === 'Strong' ? 18 : 12;
   } else {
-    tenureMonths =
-      stabilityScore >= 75 && dataConfidence >= 72
-        ? 24
-        : stabilityScore >= 60
-          ? 18
-          : 12;
+    tenureMonths = readinessTier === 'Strong' ? 24 : 18;
   }
   tenureMonths = clamp(tenureMonths, 6, 24);
 
-  // Repayment Schedule ("Daily", "Weekly", or "Monthly") matched to cash-flow rhythm
+  // Repayment Rhythm matched to verified cash-flow & UPI velocity
   let repaymentSchedule: RepaymentSchedule = 'Weekly';
   let repaymentRationale =
-    'Weekly instalments match regular restocking cycles while smoothing day-to-day sales dips.';
-
-  if (operatingDaysPerWeek >= 6 && upiShare >= 60 && cashFlowFluctuation !== 'High') {
+    'Weekly auto-debit aligns with shop replenishment while smoothing intra-month variation.';
+  if (uniqueUpiPayersPerMonth >= 110 && inflowOutflowCv <= 0.24 && !koNachTriggered) {
     repaymentSchedule = 'Daily';
     repaymentRationale =
-      'High daily UPI velocity supports small automated daily micro-sweeps without month-end lump sums.';
-  } else if (
-    (operatingDaysPerWeek <= 5 && cashFlowFluctuation === 'Low' && paymentConsistency >= 80) ||
-    (tenureMonths >= 18 && cashFlowFluctuation === 'Low' && stabilityScore >= 78)
-  ) {
+      'High daily UPI payer velocity supports low-friction daily micro-sweeps from merchant settlements.';
+  } else if (inflowOutflowCv <= 0.2 && uniqueUpiPayersPerMonth < 110 && !knockOutTriggered) {
     repaymentSchedule = 'Monthly';
     repaymentRationale =
-      'Steady low-volatility collections and strong bill discipline support a clean monthly e-NACH schedule.';
-  } else if (cashFlowFluctuation === 'High') {
+      'Low cash-flow volatility and batch receivable cycles suit a standard monthly e-NACH schedule.';
+  } else if (koNachTriggered) {
     repaymentSchedule = 'Weekly';
     repaymentRationale =
-      'Weekly collections absorb daily revenue spikes and avoid heavy month-end repayment pressure.';
+      'Weekly smaller-ticket collections reduce NACH bounce risk compared to large lump-sum debits.';
   }
 
-  // Max safe FOIR (debt service as % of monthly net surplus)
-  const baseSafeFoir =
-    readinessTier === 'Strong' ? 0.4 : readinessTier === 'Moderate' ? 0.33 : 0.24;
-
-  // Data confidence haircut multiplier (0.55 to 1.0): lower confidence trims initial exposure
-  const confidenceHaircutMultiplier = Number(
-    clamp(0.55 + ((dataConfidence - 25) / 70) * 0.45, 0.55, 1.0).toFixed(2)
-  );
-
+  // Amortizing present-value principal limit from maxSafeMonthlyEmi
   const monthlyRate = midApr / 100 / 12;
-  const maxSafeMonthlyPayment = positiveSurplus * baseSafeFoir;
   const annuityFactor =
     monthlyRate > 0
       ? (1 - Math.pow(1 + monthlyRate, -tenureMonths)) / monthlyRate
       : tenureMonths;
 
-  const surplusCappedLoan = maxSafeMonthlyPayment * annuityFactor * confidenceHaircutMultiplier;
-  const revenueMultiplierCap =
-    monthlyRevenue *
-    (readinessTier === 'Strong' ? 2.0 : readinessTier === 'Moderate' ? 1.45 : 0.95) *
-    confidenceHaircutMultiplier;
+  let formulaMaxLoan = maxSafeMonthlyEmi * annuityFactor;
 
-  const rawRecommended = Math.min(requestedLoan, surplusCappedLoan, revenueMultiplierCap);
+  // Hard knock-out exposure cap: under NACH bounce knock-out, cap pilot exposure at ₹40,000 max
+  const koPilotCap = koNachTriggered ? 40000 : Infinity;
+  const boundedLoan = Math.min(requestedLoan, formulaMaxLoan, koPilotCap);
 
   const recommendedLoanAmount =
-    positiveSurplus <= 0 || rawRecommended < 5000
+    koSurplusTriggered || boundedLoan < 5000
       ? 0
-      : Math.max(5000, roundToNearest(rawRecommended, 1000));
+      : Math.max(5000, roundToNearest(boundedLoan, 1000));
 
   const loanCoverageRatio =
     requestedLoan > 0 ? clamp(recommendedLoanAmount / requestedLoan, 0, 1) : 0;
 
-  // Amortized monthly repayment & cycle instalment
-  const monthlyRepaymentTotal =
+  const estimatedMonthlyEmi =
     recommendedLoanAmount > 0
       ? Math.round(
           (recommendedLoanAmount * monthlyRate) /
@@ -446,191 +392,194 @@ export function evaluateCreditProfile(inputs: MSMEInputs): CreditAssessment {
       : 0;
 
   const cyclesPerMonth =
-    repaymentSchedule === 'Daily'
-      ? Math.max(1, monthlyOperatingDays)
-      : repaymentSchedule === 'Weekly'
-        ? WEEKS_PER_MONTH
-        : 1;
+    repaymentSchedule === 'Daily' ? 26 : repaymentSchedule === 'Weekly' ? 4.33 : 1;
+  const estimatedCycleInstallment =
+    estimatedMonthlyEmi > 0 ? Math.round(estimatedMonthlyEmi / cyclesPerMonth) : 0;
 
-  const estimatedInstallment =
-    monthlyRepaymentTotal > 0 ? Math.round(monthlyRepaymentTotal / cyclesPerMonth) : 0;
+  const remainingMonthlyBuffer = Math.max(0, positiveSurplus - estimatedMonthlyEmi);
 
-  const repaymentToSurplusPercent =
-    positiveSurplus > 0
-      ? clamp((monthlyRepaymentTotal / positiveSurplus) * 100, 0, 100)
-      : 0;
-
-  const remainingMonthlyBuffer = Math.max(0, positiveSurplus - monthlyRepaymentTotal);
-
-  // Overall Underwriting Decision
+  // Underwriting Decision
   let underwritingDecision: CreditAssessment['underwritingDecision'] =
-    'Eligible — Standard Track';
-  if (recommendedLoanAmount === 0) {
-    underwritingDecision = 'Decline — Insufficient Surplus';
-  } else if (
-    verificationStatus === 'Consistency Warning' ||
-    readinessTier === 'Watchlist'
-  ) {
-    underwritingDecision = 'Conditional — Proof & Step-Up Pilot';
-  } else if (loanCoverageRatio < 0.92) {
-    underwritingDecision = 'Eligible — Right-Sized';
+    'Eligible — Standard AA Track';
+  if (koSurplusTriggered || recommendedLoanAmount === 0) {
+    underwritingDecision = 'Decline — Non-Positive Surplus';
+  } else if (koNachTriggered) {
+    underwritingDecision = 'Watchlist — Knock-Out Exposure Cap';
+  } else if (readinessTier === 'Watchlist') {
+    underwritingDecision = 'Watchlist — Starter Pilot Only';
+  } else if (loanCoverageRatio < 0.95) {
+    underwritingDecision = 'Eligible — Right-Sized by EMI Cap';
   }
 
   // ---------------------------------------------------------------------------
-  // 5. Risk Flags (Lender Diagnostics)
+  // 5. Explicit Policy Reason Codes
   // ---------------------------------------------------------------------------
-  const riskFlags: RiskFlag[] = [];
+  const policyReasonCodes: PolicyReasonCode[] = [];
 
-  if (monthlyNetSurplus <= 0) {
-    riskFlags.push({
-      id: 'deficit-surplus',
-      severity: 'High',
-      title: 'Negative or zero monthly net surplus',
-      detail: `Fixed overheads (${formatINR(monthlyFixedExpenses)}) consume 100% of estimated monthly sales (${formatINR(monthlyRevenue)}).`,
-      mitigant: 'Hold disbursement until verified cash-flow demonstrates at least 1.3x expense coverage.',
+  if (koSurplusTriggered) {
+    policyReasonCodes.push({
+      code: 'RC_KO_NON_POSITIVE_SURPLUS',
+      category: 'Knock-Out',
+      title: 'Verified monthly net surplus is zero or negative',
+      detail: `Verified outflows (${formatINR(avgMonthlyOutflow)}) equal or exceed inflows (${formatINR(avgMonthlyInflow)}). Exposure automatically set to ₹0.`,
     });
   }
 
-  if (verificationStatus === 'Consistency Warning') {
-    riskFlags.push({
-      id: 'cross-signal-warning',
-      severity: 'High',
-      title: 'Cross-signal consistency anomaly flagged',
-      detail: `Data confidence dropped to ${dataConfidence}/100 due to conflicting self-reported inputs; exposure trimmed to ${Math.round(confidenceHaircutMultiplier * 100)}%.`,
-      mitigant: 'Require 90-day bank/UPI settlement PDF and field verification prior to sanction.',
-    });
-  }
-
-  if (cashFlowFluctuation === 'High') {
-    riskFlags.push({
-      id: 'high-volatility',
-      severity: 'High',
-      title: 'High week-to-week revenue volatility',
-      detail: 'Irregular customer receipts raise missed-instalment probability on rigid schedules.',
-      mitigant: 'Enforce weekly repayment cadence and cap FOIR below 30% of net surplus.',
-    });
-  }
-
-  if (upiShare < 45) {
-    riskFlags.push({
-      id: 'low-digital-trail',
-      severity: 'Medium',
-      title: `Thin digital footprint (${upiShare}% UPI share)`,
-      detail: 'Over half of revenue is cash-settled and cannot be auto-verified via UPI settlement logs.',
-      mitigant: 'Collect 3 months of supplier invoices, rent receipts, or electricity bills as corroboration.',
-    });
-  }
-
-  if (paymentConsistency < 75) {
-    riskFlags.push({
-      id: 'weak-bill-consistency',
-      severity: 'Medium',
-      title: `Irregular recurring payment history (${paymentConsistency}%)`,
-      detail: 'Frequent late utility or supplier payments signal tight liquidity management.',
-      mitigant: 'Start with a 6-month step-up pilot tranche with UPI AutoPay pre-debit nudges.',
-    });
-  }
-
-  if (loanCoverageRatio < 0.88 && recommendedLoanAmount > 0) {
-    riskFlags.push({
-      id: 'ticket-right-sized',
-      severity: 'Low',
-      title: `Requested ticket right-sized from ${formatINR(requestedLoan)}`,
-      detail: `Capped at ${formatINR(recommendedLoanAmount)} (${Math.round(loanCoverageRatio * 100)}%) to keep debt service at ${Math.round(repaymentToSurplusPercent)}% of surplus.`,
-      mitigant: 'Offer automatic limit step-up after 3 consecutive on-time repayment cycles.',
-    });
-  }
-
-  if (riskFlags.length === 0) {
-    riskFlags.push({
-      id: 'clean-underwriting',
-      severity: 'Low',
-      title: 'No material underwriting exceptions',
-      detail: 'Cash-flow coverage, UPI trail, and bill discipline sit inside standard thin-file policy.',
-      mitigant: 'Standard e-NACH / UPI AutoPay mandate with quarterly cash-flow health check.',
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // 6. Actionable Borrower Tips
-  // ---------------------------------------------------------------------------
-  const borrowerTips: BorrowerActionTip[] = [];
-
-  if (verificationStatus === 'Consistency Warning') {
-    borrowerTips.push({
-      title: 'Share 90-day UPI or bank statements to verify numbers',
+  if (koNachTriggered) {
+    policyReasonCodes.push({
+      code: 'RC_KO_NACH_BOUNCE_LIMIT',
+      category: 'Knock-Out',
+      title: `NACH bounce ceiling exceeded (${nachBounces6m} > 2 in 6m)`,
       detail:
-        'Some reported inputs look unusual together. Uploading settlement proof removes the safety cap and can unlock a higher limit.',
-      impactLabel: 'Raises data confidence',
-    });
-  } else if (verificationStatus === 'Self-Reported · Needs Proof') {
-    borrowerTips.push({
-      title: 'Attach electricity, rent, or supplier bills',
-      detail:
-        'Adding simple proof of business expenses corroborates cash sales and improves your pricing band.',
-      impactLabel: 'Faster approval',
+        'Hard knock-out rule forced Watchlist tier, capped max EMI at 18% of surplus, and restricted maximum pilot exposure to ₹40,000 over 6 months.',
     });
   }
 
-  if (upiShare < 65) {
-    borrowerTips.push({
-      title: 'Route more customer payments via UPI QR',
-      detail: `Increasing UPI share from ${upiShare}% toward 70% creates an automatic verified sales trail without paperwork.`,
-      impactLabel: '+6 to +12 confidence',
+  // Add pillar-level policy codes
+  for (const pillar of pillars) {
+    const category =
+      pillar.status === 'Strong'
+        ? 'Strength'
+        : pillar.status === 'Watch'
+          ? 'Watch'
+          : 'Strength';
+
+    // Include all Watch pillars and strongest positive drivers
+    if (pillar.status === 'Watch' || pillar.subScore >= 75) {
+      policyReasonCodes.push({
+        code: pillar.policyCode,
+        category,
+        title: `${pillar.label}: ${pillar.observedDisplay} (${pillar.subScore}/100)`,
+        detail: pillar.rationale,
+      });
+    }
+  }
+
+  // Add sizing policy reason code
+  if (!koSurplusTriggered) {
+    if (recommendedLoanAmount < requestedLoan) {
+      policyReasonCodes.push({
+        code: koNachTriggered ? 'RC_SIZE_KO_PILOT_CAP' : 'RC_SIZE_EMI_SURPLUS_CAP',
+        category: 'Sizing',
+        title: `Exposure right-sized to ${formatINR(recommendedLoanAmount)} (${Math.round(loanCoverageRatio * 100)}% of request)`,
+        detail: `Bounded by ${maxEmiRatioPercent}% monthly net surplus EMI ceiling (${formatINR(maxSafeMonthlyEmi)}/mo)${koNachTriggered ? ' and ₹40,000 Watchlist pilot cap' : ''}.`,
+      });
+    } else {
+      policyReasonCodes.push({
+        code: 'RC_SIZE_REQUEST_WITHIN_CAP',
+        category: 'Sizing',
+        title: `Full requested amount (${formatINR(requestedLoan)}) fits within EMI cap`,
+        detail: `Estimated monthly EMI (${formatINR(estimatedMonthlyEmi)}) stays within ${maxEmiRatioPercent}% of verified monthly net surplus (${formatINR(monthlyNetSurplus)}).`,
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 6. Lender Fair Loan Structuring Guardrails
+  // ---------------------------------------------------------------------------
+  const structuringGuardrails: string[] = [];
+  if (koSurplusTriggered) {
+    structuringGuardrails.push(
+      'Decline sanction under current verified cash flow; re-evaluate after 90-day AA refresh showing positive net surplus.'
+    );
+  } else {
+    structuringGuardrails.push(
+      `Enforce ${repaymentSchedule.toLowerCase()} ${repaymentSchedule === 'Daily' ? 'UPI merchant settlement sweep' : 'e-NACH / UPI AutoPay'} capped at ${formatINR(estimatedMonthlyEmi)}/mo (≤${maxEmiRatioPercent}% of verified surplus).`
+    );
+    if (koNachTriggered) {
+      structuringGuardrails.push(
+        'Mandatory 6-month starter pilot tranche (≤₹40,000) with zero-bounce graduation requirement before limit step-up.'
+      );
+    }
+    if (minToAvgBalanceRatio < 0.25) {
+      structuringGuardrails.push(
+        'Set debit execution date 24h after peak weekly UPI settlement window to protect thin liquidity buffer.'
+      );
+    }
+    if (inflowOutflowCv > 0.34) {
+      structuringGuardrails.push(
+        'Enable automated lean-week grace window (up to 3 days) without penal bounce charges to prevent NACH spiral.'
+      );
+    }
+    if (uniqueUpiPayersPerMonth < 50) {
+      structuringGuardrails.push(
+        'Review top-5 counterparty concentration in AA bank statement summary before second-tranche step-up.'
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. Plain-Language Borrower Improvement Steps
+  // ---------------------------------------------------------------------------
+  const borrowerImprovementSteps: BorrowerImprovementStep[] = [];
+
+  if (nachBounces6m > 0) {
+    borrowerImprovementSteps.push({
+      title: 'Maintain zero auto-debit (NACH) bounces for the next 6 months',
+      detail: `Your bank statement currently shows ${nachBounces6m} NACH ${nachBounces6m === 1 ? 'bounce' : 'bounces'}. Keeping sufficient balance before scheduled debit dates lifts knock-out caps and improves your interest band.`,
+      targetMetric: 'Target: 0 bounces / 6m',
     });
   }
 
-  if (paymentConsistency < 85) {
-    borrowerTips.push({
-      title: 'Keep electricity, rent & supplier payments on time',
-      detail: 'Sustaining 85%+ bill timeliness strengthens your stability score and lowers your indicative APR range.',
-      impactLabel: 'Lower APR range',
+  if (minToAvgBalanceRatio < 0.35) {
+    borrowerImprovementSteps.push({
+      title: 'Keep a steadier minimum balance in your business account',
+      detail: `Your minimum monthly balance is ${Math.round(minToAvgBalanceRatio * 100)}% of your average balance. Retaining a 35%+ liquidity cushion directly boosts the 25%-weighted Liquidity pillar.`,
+      targetMetric: 'Target: ≥ 35% cushion',
     });
   }
 
-  if (loanCoverageRatio < 0.92 && recommendedLoanAmount > 0) {
-    borrowerTips.push({
-      title: 'Build a step-up track record with the starter limit',
-      detail: `Paying ${formatINR(estimatedInstallment)} (${repaymentSchedule.toLowerCase()}) cleanly for 90 days unlocks a higher limit toward ${formatINR(requestedLoan)}.`,
-      impactLabel: 'Step-up eligible',
+  if (bbpsOnTimeRate < 92) {
+    borrowerImprovementSteps.push({
+      title: 'Pay electricity and utility bills on time via BBPS',
+      detail: `Raising BBPS on-time rate from ${bbpsOnTimeRate}% toward 95%+ strengthens verified payment discipline with zero extra paperwork.`,
+      targetMetric: 'Target: ≥ 95% on-time',
     });
   }
 
-  if (borrowerTips.length < 2) {
-    borrowerTips.push({
-      title: 'Preserve your monthly safety buffer',
-      detail: `Keeping ${formatINR(remainingMonthlyBuffer)}/mo free after loan repayments protects working capital during slower weeks.`,
-      impactLabel: 'Healthy headroom',
+  if (uniqueUpiPayersPerMonth < 80) {
+    borrowerImprovementSteps.push({
+      title: 'Route more walk-in customers through your business UPI QR',
+      detail: `Growing verified monthly unique UPI payers beyond 80 reduces buyer-concentration risk and increases your Payer Diversity score.`,
+      targetMetric: 'Target: 80+ payers/mo',
+    });
+  }
+
+  if (borrowerImprovementSteps.length < 2) {
+    borrowerImprovementSteps.push({
+      title: 'Keep your verified account active through the loan cycle',
+      detail: `Continuing clean UPI collections and keeping ${formatINR(remainingMonthlyBuffer)}/mo free after repayments unlocks faster step-up limits on renewal.`,
+      targetMetric: 'Step-up track',
     });
   }
 
   return {
-    monthlyRevenue,
-    monthlyFixedExpenses,
+    effectiveSignals,
     monthlyNetSurplus,
     expenseCoverageRatio,
     operatingMarginPercent,
     stabilityScore,
     readinessTier,
-    dataConfidence,
-    verificationStatus,
-    confidenceHaircutMultiplier,
+    pillars,
+    knockOutTriggered,
+    knockOutRules,
     recommendedLoanAmount,
+    requestedLoan,
     loanCoverageRatio,
+    maxEmiRatioPercent,
+    maxSafeMonthlyEmi,
+    estimatedMonthlyEmi,
+    estimatedCycleInstallment,
     tenureMonths,
     repaymentSchedule,
     repaymentRationale,
     interestMinApr,
     interestMaxApr,
     indicativeInterestRange,
-    estimatedInstallment,
-    monthlyRepaymentTotal,
-    repaymentToSurplusPercent,
     remainingMonthlyBuffer,
-    keySignals,
-    riskFlags,
-    verificationChecks,
-    borrowerTips: borrowerTips.slice(0, 3),
+    policyReasonCodes,
+    structuringGuardrails,
+    borrowerImprovementSteps: borrowerImprovementSteps.slice(0, 3),
     underwritingDecision,
   };
 }

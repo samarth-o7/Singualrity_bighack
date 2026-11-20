@@ -1,163 +1,206 @@
 import { useMemo, useState } from 'react';
+import { BorrowerPortal } from './components/BorrowerPortal';
 import { Header } from './components/Header';
-import { InputPanel } from './components/InputPanel';
-import { OutputPanel } from './components/OutputPanel';
-import { MSME_PRESETS } from './data/presets';
-import { MSMEInputs, MSMEPreset, PerspectiveTab, PresetId, ViewMode } from './types/credit';
-import { evaluateCreditProfile } from './utils/creditModel';
+import { LenderPortal } from './components/LenderPortal';
+import {
+  INITIAL_LENDER_QUEUE,
+  SYNTHETIC_MSME_PROFILES,
+} from './data/msmeProfiles';
+import {
+  LoanApplication,
+  ProfileId,
+  RoleMode,
+  UnderwriterStatus,
+  ViewMode,
+} from './types/credit';
 
-function areInputsEqual(a: MSMEInputs, b: MSMEInputs): boolean {
-  return (
-    a.dailySales === b.dailySales &&
-    a.operatingDaysPerWeek === b.operatingDaysPerWeek &&
-    a.upiShare === b.upiShare &&
-    a.cashFlowFluctuation === b.cashFlowFluctuation &&
-    a.paymentConsistency === b.paymentConsistency &&
-    a.monthlyFixedExpenses === b.monthlyFixedExpenses &&
-    a.requestedLoan === b.requestedLoan
-  );
+const BORROWER_CONSENT_APP_ID = 'app-borrower-aa-consent';
+const BORROWER_CONSENT_REF = 'AA-2050';
+
+function formatCurrentTime(): string {
+  return new Intl.DateTimeFormat('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(new Date());
 }
 
 export default function App() {
+  const [roleMode, setRoleMode] = useState<RoleMode>('borrower');
   const [viewMode, setViewMode] = useState<ViewMode>('desktop');
-  const [activePresetId, setActivePresetId] = useState<PresetId>(MSME_PRESETS[0].id);
-  const [inputs, setInputs] = useState<MSMEInputs>(MSME_PRESETS[0].inputs);
-  const [activeTab, setActiveTab] = useState<PerspectiveTab>('borrower');
 
-  const activePreset = useMemo(
-    () => MSME_PRESETS.find((p) => p.id === activePresetId) ?? MSME_PRESETS[0],
-    [activePresetId]
+  // Borrower Portal state: selected synthetic persona, requested loan amount, and revocable consent state
+  const [selectedProfileId, setSelectedProfileId] = useState<ProfileId>(
+    SYNTHETIC_MSME_PROFILES[0].id
+  );
+  const [requestedLoan, setRequestedLoan] = useState<number>(
+    SYNTHETIC_MSME_PROFILES[0].defaultRequestedLoan
+  );
+  const [consentGranted, setConsentGranted] = useState<boolean>(false);
+
+  // Lender Portal queue: 4 synthetic MSME profiles + any consented submission from Borrower Portal
+  const [applications, setApplications] = useState<LoanApplication[]>(
+    INITIAL_LENDER_QUEUE
+  );
+  const [selectedApplicationId, setSelectedApplicationId] = useState<string>(
+    INITIAL_LENDER_QUEUE[0].id
   );
 
-  const isCustomized = useMemo(
-    () => !areInputsEqual(inputs, activePreset.inputs),
-    [inputs, activePreset]
+  const activeProfile = useMemo(
+    () =>
+      SYNTHETIC_MSME_PROFILES.find((p) => p.id === selectedProfileId) ??
+      SYNTHETIC_MSME_PROFILES[0],
+    [selectedProfileId]
   );
 
-  const assessment = useMemo(() => evaluateCreditProfile(inputs), [inputs]);
+  const submittedBorrowerApp = useMemo(
+    () => applications.find((app) => app.id === BORROWER_CONSENT_APP_ID) ?? null,
+    [applications]
+  );
 
-  const handleSelectPreset = (preset: MSMEPreset) => {
-    setActivePresetId(preset.id);
-    setInputs({ ...preset.inputs });
+  const hasLoanAmountChange = Boolean(
+    consentGranted &&
+      submittedBorrowerApp &&
+      submittedBorrowerApp.requestedLoan !== requestedLoan
+  );
+
+  const upsertBorrowerApplication = (profileId: ProfileId, loanAmount: number) => {
+    const profile =
+      SYNTHETIC_MSME_PROFILES.find((p) => p.id === profileId) ??
+      SYNTHETIC_MSME_PROFILES[0];
+    const timestamp = `Today, ${formatCurrentTime()}`;
+
+    setApplications((prev) => {
+      const existing = prev.find((app) => app.id === BORROWER_CONSENT_APP_ID);
+      const record: LoanApplication = {
+        id: BORROWER_CONSENT_APP_ID,
+        referenceCode: BORROWER_CONSENT_REF,
+        profileId: profile.id,
+        businessName: profile.businessName,
+        businessType: profile.label,
+        udyamId: profile.udyamId,
+        location: profile.location,
+        sectorNote: profile.sectorNote,
+        aaSourceLabel: profile.aaSourceLabel,
+        source: 'borrower-consent',
+        consentGrantedAt: timestamp,
+        reviewStatus:
+          existing && existing.profileId === profile.id
+            ? existing.reviewStatus
+            : profile.signals.nachBounces6m > 2
+              ? 'Guardrail Hold'
+              : 'AA Verified',
+        requestedLoan: loanAmount,
+        signals: { ...profile.signals },
+      };
+
+      const others = prev.filter((app) => app.id !== BORROWER_CONSENT_APP_ID);
+      return [record, ...others];
+    });
+
+    setSelectedApplicationId(BORROWER_CONSENT_APP_ID);
   };
 
-  const handleResetPreset = () => {
-    setInputs({ ...activePreset.inputs });
+  const handleSelectProfile = (profileId: ProfileId) => {
+    const profile =
+      SYNTHETIC_MSME_PROFILES.find((p) => p.id === profileId) ??
+      SYNTHETIC_MSME_PROFILES[0];
+    setSelectedProfileId(profile.id);
+    setRequestedLoan(profile.defaultRequestedLoan);
+    // Switching persona requires fresh explicit read-only AA consent
+    setConsentGranted(false);
   };
 
-  const handleChangeInput = <K extends keyof MSMEInputs>(key: K, value: MSMEInputs[K]) => {
-    setInputs((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
+  const handleGrantConsent = () => {
+    setConsentGranted(true);
+    upsertBorrowerApplication(activeProfile.id, requestedLoan);
+  };
+
+  const handleUpdateLoanRequest = () => {
+    if (!consentGranted) return;
+    upsertBorrowerApplication(activeProfile.id, requestedLoan);
+  };
+
+  const handleRevokeConsent = () => {
+    setConsentGranted(false);
+    setApplications((prev) => {
+      const remaining = prev.filter((app) => app.id !== BORROWER_CONSENT_APP_ID);
+      if (selectedApplicationId === BORROWER_CONSENT_APP_ID && remaining.length > 0) {
+        setSelectedApplicationId(remaining[0].id);
+      }
+      return remaining;
+    });
+  };
+
+  const handleReviewStatusChange = (appId: string, status: UnderwriterStatus) => {
+    setApplications((prev) =>
+      prev.map((app) => (app.id === appId ? { ...app, reviewStatus: status } : app))
+    );
   };
 
   const isMobileFrame = viewMode === 'mobile';
 
+  const workspaceContent =
+    roleMode === 'borrower' ? (
+      <BorrowerPortal
+        profiles={SYNTHETIC_MSME_PROFILES}
+        selectedProfileId={selectedProfileId}
+        requestedLoan={requestedLoan}
+        consentGranted={consentGranted}
+        submittedApplication={submittedBorrowerApp}
+        hasLoanAmountChange={hasLoanAmountChange}
+        isMobileFrame={isMobileFrame}
+        onSelectProfile={handleSelectProfile}
+        onRequestedLoanChange={setRequestedLoan}
+        onGrantConsent={handleGrantConsent}
+        onUpdateLoanRequest={handleUpdateLoanRequest}
+        onRevokeConsent={handleRevokeConsent}
+      />
+    ) : (
+      <LenderPortal
+        applications={applications}
+        selectedApplicationId={selectedApplicationId}
+        isMobileFrame={isMobileFrame}
+        onSelectApplication={setSelectedApplicationId}
+        onReviewStatusChange={handleReviewStatusChange}
+      />
+    );
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
-      <Header viewMode={viewMode} onViewModeChange={setViewMode} />
+      <Header
+        roleMode={roleMode}
+        viewMode={viewMode}
+        queueCount={applications.length}
+        hasBorrowerSubmission={submittedBorrowerApp !== null}
+        onRoleModeChange={setRoleMode}
+        onViewModeChange={setViewMode}
+      />
 
       <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
         {isMobileFrame ? (
-          /* Centered 390px Phone Frame Preview */
           <div className="mx-auto flex flex-col items-center">
             <div className="mb-3 flex items-center gap-2 text-xs text-slate-500">
-              <span>Mobile Frame Preview</span>
+              <span>
+                {roleMode === 'borrower' ? 'Borrower Portal' : 'Lender Portal'} · Mobile Frame
+              </span>
               <span aria-hidden="true">·</span>
               <span className="font-mono tabular-nums">390px viewport</span>
             </div>
 
-            <div className="w-full max-w-[390px] rounded-[2rem] border-[6px] border-slate-900 bg-slate-50 shadow-xl overflow-hidden">
-              {/* Subtle phone top notch bar */}
+            <div className="w-full max-w-[390px] overflow-hidden rounded-[2rem] border-[6px] border-slate-900 bg-slate-50 shadow-xl">
               <div
-                className="flex items-center justify-center bg-white py-2 border-b border-slate-200"
+                className="flex items-center justify-center border-b border-slate-200 bg-white py-2"
                 aria-hidden="true"
               >
                 <div className="h-1.5 w-16 rounded-full bg-slate-200" />
               </div>
 
-              <div className="max-h-[780px] overflow-y-auto p-3.5 space-y-4">
-                <div>
-                  <h1 className="text-base font-bold tracking-tight text-slate-900">
-                    Cash-Flow Credit Assessment
-                  </h1>
-                  <p className="mt-0.5 text-xs text-slate-600">
-                    Evaluate thin-file Indian MSMEs using sales rhythm, UPI trail, and bill
-                    consistency.
-                  </p>
-                </div>
-
-                <InputPanel
-                  presets={MSME_PRESETS}
-                  activePreset={activePreset}
-                  activePresetId={activePresetId}
-                  isCustomized={isCustomized}
-                  inputs={inputs}
-                  monthlyRevenue={assessment.monthlyRevenue}
-                  monthlyNetSurplus={assessment.monthlyNetSurplus}
-                  isMobileFrame={true}
-                  onSelectPreset={handleSelectPreset}
-                  onResetPreset={handleResetPreset}
-                  onChangeInput={handleChangeInput}
-                />
-
-                <OutputPanel
-                  inputs={inputs}
-                  assessment={assessment}
-                  activeTab={activeTab}
-                  isMobileFrame={true}
-                  onTabChange={setActiveTab}
-                />
-              </div>
+              <div className="max-h-[780px] overflow-y-auto p-3.5">{workspaceContent}</div>
             </div>
           </div>
         ) : (
-          /* Full-Width Responsive Desktop Workspace */
-          <div className="mx-auto max-w-[1320px]">
-            <div className="mb-6 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl text-balance">
-                  Cash-Flow Credit Assessment
-                </h1>
-                <p className="mt-1 text-sm text-slate-600">
-                  Underwrite thin-file Indian MSMEs from operating cash-flow signals instead of
-                  traditional credit bureau history.
-                </p>
-              </div>
-              <p className="text-xs text-slate-500 whitespace-nowrap">
-                Finance Track · Problem F2 Prototype
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
-              <div className="lg:col-span-6 xl:col-span-6">
-                <InputPanel
-                  presets={MSME_PRESETS}
-                  activePreset={activePreset}
-                  activePresetId={activePresetId}
-                  isCustomized={isCustomized}
-                  inputs={inputs}
-                  monthlyRevenue={assessment.monthlyRevenue}
-                  monthlyNetSurplus={assessment.monthlyNetSurplus}
-                  isMobileFrame={false}
-                  onSelectPreset={handleSelectPreset}
-                  onResetPreset={handleResetPreset}
-                  onChangeInput={handleChangeInput}
-                />
-              </div>
-
-              <div className="lg:col-span-6 xl:col-span-6 lg:sticky lg:top-20">
-                <OutputPanel
-                  inputs={inputs}
-                  assessment={assessment}
-                  activeTab={activeTab}
-                  isMobileFrame={false}
-                  onTabChange={setActiveTab}
-                />
-              </div>
-            </div>
-          </div>
+          workspaceContent
         )}
       </main>
     </div>
