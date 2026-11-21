@@ -2,6 +2,25 @@ export type ViewMode = 'desktop' | 'mobile';
 
 export type RoleMode = 'borrower' | 'lender';
 
+export type AppRoute = 'landing' | 'borrower' | 'lender';
+
+export type BorrowerStep = 'login' | 'request' | 'consent' | 'dashboard';
+
+export type BorrowerDashboardTab = 'overview' | 'signals' | 'privacy';
+
+export type LenderStep = 'login' | 'queue' | 'workspace';
+
+export type LenderQueueFilter = 'All' | ReadinessTier | 'Cash-Heavy';
+
+export type ToastVariant = 'success' | 'info' | 'warning';
+
+export interface ToastItem {
+  id: string;
+  title: string;
+  description?: string;
+  variant: ToastVariant;
+}
+
 export type ProfileId =
   | 'kirana'
   | 'tailor'
@@ -18,10 +37,10 @@ export type ProfileVerificationTag =
 export type RepaymentSchedule = 'Daily' | 'Weekly' | 'Monthly';
 
 export type UnderwriterStatus =
-  | 'AA Verified'
-  | 'In Review'
-  | 'Guardrail Hold'
-  | 'Pre-Approved';
+  | 'Pending Review'
+  | 'Approved Terms'
+  | 'Starter Tranche Offered'
+  | 'Watchlist Hold';
 
 /**
  * Tamper-resistant, system-fetched synthetic bank & UPI signals (Simulated RBI Account Aggregator):
@@ -49,6 +68,18 @@ export interface SyntheticMSMEProfile {
   signals: VerifiedMSMESignals;
 }
 
+export interface BorrowerAccountProfile {
+  businessName: string;
+  businessType: string;
+  mobileNumber: string;
+  aaHandle: string;
+  accountMask: string;
+  location: string;
+  sectorNote: string;
+  aaSourceLabel: string;
+  signals: VerifiedMSMESignals;
+}
+
 export interface LoanApplication {
   id: string;
   referenceCode: string;
@@ -56,6 +87,8 @@ export interface LoanApplication {
   businessName: string;
   businessType: string;
   accountMask: string;
+  aaHandle?: string;
+  mobileNumber?: string;
   location: string;
   sectorNote: string;
   aaSourceLabel: string;
@@ -63,6 +96,7 @@ export interface LoanApplication {
   consentGrantedAt: string;
   reviewStatus: UnderwriterStatus;
   requestedLoan: number;
+  preferredRepaymentSchedule?: RepaymentSchedule;
   signals: VerifiedMSMESignals;
 }
 
@@ -123,12 +157,6 @@ export interface BorrowerImprovementStep {
   title: string;
   detail: string;
   targetMetric: string;
-}
-
-export interface LenderAiMemo {
-  underwritingMemo: string;
-  structuringMitigations: string[];
-  verificationQuestions: string[];
 }
 
 export interface CreditAssessment {

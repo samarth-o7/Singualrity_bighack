@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import { CreditAssessment } from '../types/credit';
 import { formatINR } from '../utils/format';
 
@@ -106,7 +107,7 @@ export function CashFlowChart({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h3 id="cashflow-chart-heading" className="text-sm font-semibold text-slate-900">
-            Cash-Flow &amp; Repayment Capacity
+            Cash-Flow &amp; Periodic Instalment Capacity
           </h3>
           <p className="text-xs text-slate-500">
             Verified monthly inflow, outflow, net surplus, and deterministic Safe Repayment Capacity
@@ -120,9 +121,10 @@ export function CashFlowChart({
       </div>
 
       <div className="mt-4 space-y-3.5">
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           const absVal = Math.max(0, Math.abs(row.value));
-          const widthPct = Math.min(100, Math.max(absVal > 0 ? 2 : 0, (absVal / maxScale) * 100));
+          const widthRatio = Math.min(1, Math.max(absVal > 0 ? 0.02 : 0, absVal / maxScale));
+          const widthPct = widthRatio * 100;
           const basePct =
             row.baselineValue !== undefined
               ? Math.min(100, Math.max(0, (Math.max(0, row.baselineValue) / maxScale) * 100))
@@ -156,14 +158,20 @@ export function CashFlowChart({
               </div>
 
               <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${row.barColor}`}
-                  style={{ width: `${widthPct}%` }}
+                <motion.div
+                  className={`h-full w-full origin-left rounded-full ${row.barColor}`}
+                  initial={{ scaleX: 0 }}
+                  animate={{ scaleX: widthRatio }}
+                  transition={{
+                    duration: 0.45,
+                    delay: index * 0.04,
+                    ease: [0.16, 1, 0.3, 1],
+                  }}
                 />
 
                 {markerPct !== null && markerPct > 0 && (
                   <div
-                    className="pointer-events-none absolute inset-y-0 w-0.5 bg-slate-900"
+                    className="pointer-events-none absolute inset-y-0 w-0.5 bg-slate-900 transition-[left] duration-300"
                     style={{ left: `${markerPct}%` }}
                     title={row.secondaryMarkerLabel}
                   />

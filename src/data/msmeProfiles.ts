@@ -1,27 +1,131 @@
-import { LoanApplication, SyntheticMSMEProfile } from '../types/credit';
+import {
+  BorrowerAccountProfile,
+  LoanApplication,
+  SyntheticMSMEProfile,
+  VerifiedMSMESignals,
+} from '../types/credit';
+
+const SEEDED_CITIES = [
+  'Indore, Madhya Pradesh',
+  'Pune, Maharashtra',
+  'Surat, Gujarat',
+  'Jaipur, Rajasthan',
+  'Coimbatore, Tamil Nadu',
+  'Lucknow, Uttar Pradesh',
+  'Mysuru, Karnataka',
+  'Kochi, Kerala',
+  'Nagpur, Maharashtra',
+  'Ahmedabad, Gujarat',
+];
+
+const SEEDED_BUSINESS_TYPES = [
+  'Kirana & general retail',
+  'Neighborhood micro-enterprise',
+  'Tailoring & apparel unit',
+  'Repair & service workshop',
+  'Fresh produce & provisions',
+];
+
+function hashDigits(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededUnit(seed: number, salt: number): number {
+  let x = (seed ^ Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b) >>> 0;
+  x = (x ^ (x >>> 16)) >>> 0;
+  return (x % 10000) / 10000;
+}
 
 /**
- * Single isolated synthetic MSME profile for the private Borrower Portal session.
- * Borrowers never see or switch between other applicants' profiles.
+ * Deterministically seeds a realistic synthetic bank & UPI signal profile from a borrower's
+ * 10-digit mobile number so every newly created account gets its own distinct synthetic profile
+ * scored purely through creditModel.ts.
  */
-export const BORROWER_PERSONAL_ACCOUNT = {
-  businessName: 'Annapurna Provisions & General Store',
-  businessType: 'Kirana store',
-  accountMask: 'AA-FIP · XXXX 4819',
-  location: 'Indore, Madhya Pradesh',
-  sectorNote: 'Neighborhood groceries & daily household provisions',
-  aaSourceLabel: 'Simulated RBI AA (Bank FIP · NPCI UPI)',
-  defaultRequestedLoan: 120000,
-  signals: {
-    uniqueUpiPayersPerMonth: 142,
-    nachBounces6m: 0,
-    inflowOutflowCv: 0.17,
-    minToAvgBalanceRatio: 0.39,
-    cashDepositRegularity: 84,
-    avgMonthlyInflow: 148000,
-    avgMonthlyOutflow: 96000,
-  },
-};
+export function createSyntheticBorrowerAccount(
+  businessName: string,
+  rawMobile: string
+): BorrowerAccountProfile {
+  const digits = rawMobile.replace(/\D/g, '').slice(-10).padStart(10, '9');
+  const cleanName = businessName.trim() || 'Micro-Business Account';
+  const seed = hashDigits(digits);
+
+  const uArchetype = seededUnit(seed, 1);
+  const uInflow = seededUnit(seed, 2);
+  const uMargin = seededUnit(seed, 3);
+  const uPayers = seededUnit(seed, 4);
+  const uCv = seededUnit(seed, 5);
+  const uLiquidity = seededUnit(seed, 6);
+  const uCashDep = seededUnit(seed, 7);
+  const uNach = seededUnit(seed, 8);
+
+  // Archetypes: ~18% Cash-Heavy vendor, ~12% Watch/elevated bounce risk, ~70% Digital Strong/Moderate MSME
+  const isCashHeavy = uArchetype < 0.18;
+  const isElevatedRisk = uArchetype >= 0.88;
+
+  const avgMonthlyInflow =
+    Math.round((68000 + uInflow * 145000) / 2000) * 2000;
+  const operatingMargin = isElevatedRisk
+    ? 0.18 + uMargin * 0.12
+    : 0.28 + uMargin * 0.14;
+  const avgMonthlyOutflow =
+    Math.round((avgMonthlyInflow * (1 - operatingMargin)) / 1000) * 1000;
+
+  const signals: VerifiedMSMESignals = {
+    uniqueUpiPayersPerMonth: isCashHeavy
+      ? Math.round(9 + uPayers * 12) // <25 triggers Cash-Heavy dynamic weighting
+      : Math.round(48 + uPayers * 148),
+    nachBounces6m: isElevatedRisk
+      ? uNach > 0.45
+        ? 3
+        : 2
+      : isCashHeavy
+        ? 0
+        : uNach > 0.72
+          ? 1
+          : 0,
+    inflowOutflowCv: Number(
+      (isElevatedRisk ? 0.31 + uCv * 0.14 : 0.14 + uCv * 0.16).toFixed(2)
+    ),
+    minToAvgBalanceRatio: Number(
+      (isElevatedRisk ? 0.17 + uLiquidity * 0.1 : 0.27 + uLiquidity * 0.22).toFixed(2)
+    ),
+    cashDepositRegularity: Math.round(
+      isCashHeavy ? 84 + uCashDep * 12 : 70 + uCashDep * 22
+    ),
+    avgMonthlyInflow,
+    avgMonthlyOutflow,
+  };
+
+  const city = SEEDED_CITIES[seed % SEEDED_CITIES.length];
+  const businessType = isCashHeavy
+    ? 'Cash-heavy micro-vendor'
+    : SEEDED_BUSINESS_TYPES[(seed >>> 4) % SEEDED_BUSINESS_TYPES.length];
+  const last4 = digits.slice(-4);
+  const aaHandle = `${digits}@finvu`;
+
+  return {
+    businessName: cleanName,
+    businessType,
+    mobileNumber: digits,
+    aaHandle,
+    accountMask: `AA-FIP · XXXX ${last4}`,
+    location: city,
+    sectorNote: isCashHeavy
+      ? 'Synthetic Data · Cash-first merchant profile seeded from AA handle'
+      : 'Synthetic Data · Bank & UPI cash-flow profile seeded from AA handle',
+    aaSourceLabel: isCashHeavy
+      ? 'Synthetic RBI AA (Bank FIP · Cash Deposits)'
+      : 'Synthetic RBI AA (Bank FIP · NPCI UPI)',
+    signals,
+  };
+}
 
 /**
  * Multi-applicant synthetic MSME profiles used exclusively inside the Lender Portal queue.
@@ -152,7 +256,7 @@ export const INITIAL_LENDER_QUEUE: LoanApplication[] = SYNTHETIC_MSME_PROFILES.m
   aaSourceLabel: profile.aaSourceLabel,
   source: 'synthetic-queue',
   consentGrantedAt: QUEUE_TIMESTAMPS[profile.id] ?? 'Today',
-  reviewStatus: profile.signals.nachBounces6m > 2 ? 'Guardrail Hold' : 'AA Verified',
+  reviewStatus: profile.signals.nachBounces6m > 2 ? 'Watchlist Hold' : 'Pending Review',
   requestedLoan: profile.defaultRequestedLoan,
   signals: { ...profile.signals },
 }));

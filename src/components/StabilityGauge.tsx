@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+import { motion } from 'motion/react';
 import { ReadinessTier } from '../types/credit';
 
 interface StabilityGaugeProps {
@@ -28,6 +30,36 @@ const TIER_STYLES: Record<
 
 export function StabilityGauge({ score, tier }: StabilityGaugeProps) {
   const clamped = Math.max(0, Math.min(100, score));
+  const [displayScore, setDisplayScore] = useState<number>(0);
+  const previousRef = useRef<number>(0);
+
+  useEffect(() => {
+    const startVal = previousRef.current;
+    const endVal = clamped;
+    const duration = 520;
+    let rafId = 0;
+    const startTime = performance.now();
+
+    const tick = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const nextVal = Math.round(startVal + (endVal - startVal) * eased);
+      setDisplayScore(nextVal);
+      if (progress < 1) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        previousRef.current = endVal;
+      }
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      previousRef.current = clamped;
+    };
+  }, [clamped]);
+
   const radius = 58;
   const circumference = Math.PI * radius;
   const strokeDashoffset = circumference * (1 - clamped / 100);
@@ -49,22 +81,22 @@ export function StabilityGauge({ score, tier }: StabilityGaugeProps) {
             strokeWidth="11"
             strokeLinecap="round"
           />
-          <path
+          <motion.path
             d="M 20 78 A 58 58 0 0 1 136 78"
             fill="none"
-            stroke={style.stroke}
             strokeWidth="11"
             strokeLinecap="round"
             strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            className="transition-[stroke-dashoffset,stroke] duration-300 ease-out"
+            initial={{ strokeDashoffset: circumference, stroke: style.stroke }}
+            animate={{ strokeDashoffset, stroke: style.stroke }}
+            transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
           />
         </svg>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center">
           <div className="flex items-baseline gap-0.5">
             <span className="font-mono text-3xl font-bold tracking-tight text-slate-900 tabular-nums">
-              {clamped}
+              {displayScore}
             </span>
             <span className="font-mono text-xs font-medium text-slate-400 tabular-nums">
               /100

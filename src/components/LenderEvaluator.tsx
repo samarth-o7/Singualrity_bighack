@@ -1,3 +1,4 @@
+import { AlertTriangle, CheckCircle2, Layers } from 'lucide-react';
 import {
   CreditAssessment,
   LoanApplication,
@@ -7,7 +8,6 @@ import {
   UnderwriterStatus,
 } from '../types/credit';
 import { formatINR } from '../utils/format';
-import { AiExplanationCard } from './AiExplanationCard';
 import { CashFlowChart } from './CashFlowChart';
 import { getReadinessDescriptor, StabilityGauge } from './StabilityGauge';
 import { StarterTrancheLadderCard } from './StarterTrancheLadderCard';
@@ -22,13 +22,6 @@ interface LenderEvaluatorProps {
   onStressScenarioChange: (scenario: StressTestScenario) => void;
   onReviewStatusChange: (appId: string, status: UnderwriterStatus) => void;
 }
-
-const REVIEW_STATUSES: UnderwriterStatus[] = [
-  'AA Verified',
-  'In Review',
-  'Guardrail Hold',
-  'Pre-Approved',
-];
 
 const PILLAR_STATUS_TEXT: Record<ScorecardPillar['status'], string> = {
   Strong: 'text-emerald-700',
@@ -45,15 +38,12 @@ const REASON_CATEGORY_TEXT: Record<PolicyReasonCode['category'], string> = {
   Strength: 'text-emerald-700',
 };
 
-function summarizeStress(scenario: StressTestScenario): string {
-  const parts: string[] = [];
-  if (scenario.inflowDipPercent > 0) parts.push(`-${scenario.inflowDipPercent}% inflow dip`);
-  if (scenario.additionalNachBounces > 0)
-    parts.push(`+${scenario.additionalNachBounces} NACH bounces`);
-  if (scenario.outflowShockPercent > 0)
-    parts.push(`+${scenario.outflowShockPercent}% outflow shock`);
-  return parts.join(', ');
-}
+const STATUS_BANNER_STYLE: Record<UnderwriterStatus, string> = {
+  'Pending Review': 'text-slate-700',
+  'Approved Terms': 'text-emerald-800',
+  'Starter Tranche Offered': 'text-teal-800',
+  'Watchlist Hold': 'text-amber-800',
+};
 
 export function LenderEvaluator({
   application,
@@ -65,7 +55,6 @@ export function LenderEvaluator({
   onReviewStatusChange,
 }: LenderEvaluatorProps) {
   const stressed = isStressActive(stressScenario);
-  const stressSummary = stressed ? summarizeStress(stressScenario) : undefined;
 
   const {
     effectiveSignals,
@@ -99,16 +88,74 @@ export function LenderEvaluator({
   const isDeclined = recommendedLoanAmount === 0;
   const isDeficit = monthlyNetSurplus <= 0;
 
-  const snapshotKey = [
-    application.id,
-    application.requestedLoan,
-    stressScenario.inflowDipPercent,
-    stressScenario.additionalNachBounces,
-    stressScenario.outflowShockPercent,
-  ].join('-');
-
   return (
     <div className="space-y-5">
+      {/* Interactive Underwriter Decision Action Bar */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div
+          className={`flex gap-3 ${
+            isMobileFrame
+              ? 'flex-col'
+              : 'flex-col justify-between lg:flex-row lg:items-center'
+          }`}
+        >
+          <div>
+            <p className="text-[11px] font-medium text-slate-500">
+              Current Underwriting Decision
+            </p>
+            <p
+              className={`mt-0.5 text-sm font-bold ${STATUS_BANNER_STYLE[application.reviewStatus]}`}
+            >
+              {application.reviewStatus}
+            </p>
+          </div>
+
+          <div className={`grid gap-2 ${isMobileFrame ? 'grid-cols-1' : 'flex flex-wrap'}`}>
+            <button
+              type="button"
+              onClick={() => onReviewStatusChange(application.id, 'Approved Terms')}
+              aria-pressed={application.reviewStatus === 'Approved Terms'}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-all duration-150 active:scale-[0.98] whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${
+                application.reviewStatus === 'Approved Terms'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'border border-emerald-300 bg-emerald-50/70 text-emerald-900 hover:bg-emerald-100'
+              }`}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>Approve Terms</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onReviewStatusChange(application.id, 'Starter Tranche Offered')}
+              aria-pressed={application.reviewStatus === 'Starter Tranche Offered'}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-all duration-150 active:scale-[0.98] whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
+                application.reviewStatus === 'Starter Tranche Offered'
+                  ? 'bg-teal-700 text-white shadow-xs'
+                  : 'border border-teal-300 bg-teal-50/70 text-teal-900 hover:bg-teal-100'
+              }`}
+            >
+              <Layers className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>Offer Starter Tranche</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onReviewStatusChange(application.id, 'Watchlist Hold')}
+              aria-pressed={application.reviewStatus === 'Watchlist Hold'}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition-all duration-150 active:scale-[0.98] whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 ${
+                application.reviewStatus === 'Watchlist Hold'
+                  ? 'bg-amber-700 text-white shadow-xs'
+                  : 'border border-amber-300 bg-amber-50/70 text-amber-950 hover:bg-amber-100'
+              }`}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>Place on Watchlist</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Lender-Only Stress-Test Simulator Panel */}
       <StressTestPanel
         scenario={stressScenario}
@@ -122,61 +169,40 @@ export function LenderEvaluator({
       <div className="rounded-xl border border-slate-200 bg-white">
         {/* Applicant Identity Header */}
         <div className="border-b border-slate-200 p-5 sm:p-6">
-          <div
-            className={`flex gap-3 ${
-              isMobileFrame
-                ? 'flex-col'
-                : 'flex-col justify-between sm:flex-row sm:items-start'
-            }`}
-          >
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
-                <span className="font-mono font-semibold text-slate-800 tabular-nums">
-                  {application.referenceCode}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono text-[11px]">{application.accountMask}</span>
-                <span aria-hidden="true">·</span>
-                <span
-                  className={
-                    isCashHeavyProfile ? 'font-semibold text-teal-800' : 'text-slate-600'
-                  }
-                >
-                  {profileTag}
-                </span>
-              </div>
-
-              <h2 className="mt-1 text-lg font-bold tracking-tight text-slate-900">
-                {application.businessName}
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-600">
-                {application.businessType} · {application.location} · Consent:{' '}
-                {application.consentGrantedAt}
-              </p>
-            </div>
-
-            <div className="shrink-0">
-              <label
-                htmlFor="lender-review-status"
-                className="block text-[11px] font-medium text-slate-500"
-              >
-                Queue status
-              </label>
-              <select
-                id="lender-review-status"
-                value={application.reviewStatus}
-                onChange={(e) =>
-                  onReviewStatusChange(application.id, e.target.value as UnderwriterStatus)
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">
+              <span className="font-mono font-semibold text-slate-800 tabular-nums">
+                {application.referenceCode}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-[11px]">
+                {application.aaHandle ?? application.accountMask}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span
+                className={
+                  isCashHeavyProfile ? 'font-semibold text-teal-800' : 'text-slate-600'
                 }
-                className="mt-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-600/20"
               >
-                {REVIEW_STATUSES.map((status) => (
-                  <option key={status} value={status}>
-                    {status}
-                  </option>
-                ))}
-              </select>
+                {profileTag}
+              </span>
+              {application.preferredRepaymentSchedule && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-slate-700">
+                    Borrower Prefers: <strong>{application.preferredRepaymentSchedule}</strong>
+                  </span>
+                </>
+              )}
             </div>
+
+            <h2 className="mt-1 text-lg font-bold tracking-tight text-slate-900">
+              {application.businessName}
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-600">
+              {application.businessType} · {application.location} · Consent:{' '}
+              {application.consentGrantedAt}
+            </p>
           </div>
 
           {/* Verified Bank & UPI Signals Summary Strip */}
@@ -369,7 +395,7 @@ export function LenderEvaluator({
           </div>
         </div>
 
-        {/* Starter Tranche Ladder + Live Cash-Flow Chart + AI Credit Memo + Scorecard + Codes + Guardrails */}
+        {/* Starter Tranche Ladder + Live Cash-Flow Chart + Scorecard + Codes + Guardrails */}
         <div className="space-y-6 border-t border-slate-200 p-5 sm:p-6">
           {starterTrancheLadder.isActive && (
             <StarterTrancheLadderCard
@@ -379,25 +405,12 @@ export function LenderEvaluator({
             />
           )}
 
-          {/* Live Cash-Flow & Repayment Capacity Bar Chart */}
+          {/* Live Cash-Flow & Periodic Instalment Capacity Bar Chart */}
           <CashFlowChart
             assessment={activeAssessment}
             baselineAssessment={baselineAssessment}
             isStressed={stressed}
           />
-
-          {/* Explanation-Only Read-Only AI Credit Memo Layer (Lender Portal Only) */}
-          <div className="border-t border-slate-100 pt-5">
-            <AiExplanationCard
-              businessName={application.businessName}
-              businessType={application.businessType}
-              location={application.location}
-              assessment={activeAssessment}
-              isStressed={stressed}
-              stressSummary={stressSummary}
-              snapshotKey={snapshotKey}
-            />
-          </div>
 
           {/* Weighted 4-Signal Scorecard Table */}
           <div className="border-t border-slate-100 pt-5">
