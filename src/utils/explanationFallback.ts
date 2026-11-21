@@ -1,11 +1,7 @@
-import {
-  BorrowerAiExplanation,
-  CreditAssessment,
-  LenderAiMemo,
-} from '../types/credit';
+import { CreditAssessment, LenderAiMemo } from '../types/credit';
 import { formatINR } from './format';
 
-interface FallbackContext {
+interface LenderFallbackContext {
   businessName: string;
   businessType: string;
   location: string;
@@ -15,60 +11,12 @@ interface FallbackContext {
 }
 
 /**
- * Deterministic local fallback for the Borrower Explanation Layer.
- * Builds tailored plain-language guidance strictly from computed policy reason codes
- * and starter tranche status whenever the Gemini API is unavailable or rate-limited.
- */
-export function buildDeterministicBorrowerFallback(
-  ctx: FallbackContext
-): BorrowerAiExplanation {
-  const { businessName, assessment } = ctx;
-  const {
-    stabilityScore,
-    readinessTier,
-    isCashHeavyProfile,
-    knockOutTriggered,
-    knockOutRules,
-    recommendedLoanAmount,
-    tenureMonths,
-    repaymentSchedule,
-    indicativeInterestRange,
-    starterTrancheLadder,
-    borrowerImprovementSteps,
-  } = assessment;
-
-  const triggeredKo = knockOutRules.filter((r) => r.triggered);
-
-  let readinessSummary = '';
-  if (recommendedLoanAmount === 0) {
-    readinessSummary = `${businessName} currently scores ${stabilityScore}/100 (${readinessTier} tier) because verified monthly outflows consume all monthly inflows. Under our deterministic safety rules, borrowing is paused until positive monthly net surplus is restored.`;
-  } else if (knockOutTriggered) {
-    const koLabels = triggeredKo.map((k) => k.label).join(' and ');
-    readinessSummary = `${businessName} scored ${stabilityScore}/100 and was placed in the ${readinessTier} tier due to a hard safety trigger (${koLabels}). To protect your cash flow, exposure is capped at ${formatINR(recommendedLoanAmount)} over ${tenureMonths} months (${repaymentSchedule.toLowerCase()}, ${indicativeInterestRange}).`;
-  } else if (isCashHeavyProfile && starterTrancheLadder.isActive) {
-    readinessSummary = `${businessName} achieved a ${stabilityScore}/100 (${readinessTier} tier) under our Cash-Heavy · Outflow-Verified track—your strong utility bill and bank cash-deposit discipline replaced UPI volume so you were not unfairly excluded. You qualify for Starter Tranche 1 up to ${formatINR(recommendedLoanAmount)} over ${tenureMonths} months (${repaymentSchedule.toLowerCase()}, ${indicativeInterestRange}), with an automatic step-up path to ₹25,000 and ₹50,000.`;
-  } else {
-    readinessSummary = `${businessName} achieved a verified Stability Score of ${stabilityScore}/100 (${readinessTier} tier) from read-only RBI AA, BBPS, and Udyam signals. You qualify for up to ${formatINR(recommendedLoanAmount)} over ${tenureMonths} months on a ${repaymentSchedule.toLowerCase()} repayment rhythm at an indicative ${indicativeInterestRange}.`;
-  }
-
-  const actionSteps = borrowerImprovementSteps.slice(0, 3).map((step) => ({
-    title: step.title,
-    detail: step.detail,
-  }));
-
-  return {
-    readinessSummary,
-    actionSteps,
-  };
-}
-
-/**
  * Deterministic local fallback for the Lender Credit Memo Layer.
  * Synthesizes an underwriting memo, structuring mitigations, and targeted field/phone
  * verification questions strictly from policy reason codes and deterministic ratios.
  */
 export function buildDeterministicLenderFallback(
-  ctx: FallbackContext
+  ctx: LenderFallbackContext
 ): LenderAiMemo {
   const { businessName, businessType, assessment, isStressed, stressSummary } = ctx;
   const {
@@ -81,7 +29,7 @@ export function buildDeterministicLenderFallback(
     tenureMonths,
     repaymentSchedule,
     indicativeInterestRange,
-    maxEmiRatioPercent,
+    maxRepaymentRatioPercent,
     monthlyNetSurplus,
     effectiveSignals,
     policyReasonCodes,
@@ -106,7 +54,7 @@ export function buildDeterministicLenderFallback(
             : isCashHeavyProfile
               ? 'Dynamic outflow-verified weighting preserved inclusion while capping initial risk via the ₹15,000 Starter Tranche ladder; '
               : ''
-        }recommended structure is ${formatINR(recommendedLoanAmount)} for ${tenureMonths} months (${repaymentSchedule}, ${indicativeInterestRange}) within the ${maxEmiRatioPercent}% net surplus EMI ceiling.`;
+        }recommended structure is ${formatINR(recommendedLoanAmount)} for ${tenureMonths} months (${repaymentSchedule} periodic instalments, ${indicativeInterestRange}) within the ${maxRepaymentRatioPercent}% Safe Repayment Capacity ceiling.`;
 
   const structuringMitigations = structuringGuardrails.slice(0, 3);
 
@@ -114,7 +62,7 @@ export function buildDeterministicLenderFallback(
 
   if (isCashHeavyProfile) {
     verificationQuestions.push(
-      `Confirm the weekly bank counter / CDM cash-deposit routine (${effectiveSignals.cashDepositRegularity}/100 regularity) and verify primary wholesale mandi/supplier receipts.`
+      `Confirm the weekly bank counter / CDM cash-deposit routine (${effectiveSignals.cashDepositRegularity}/100 regularity) and verify primary wholesale supplier receipts.`
     );
   }
   if (effectiveSignals.nachBounces6m > 0) {
@@ -134,12 +82,12 @@ export function buildDeterministicLenderFallback(
   }
   if (verificationQuestions.length < 3) {
     verificationQuestions.push(
-      `Verify physical shop continuity matching Udyam vintage (${effectiveSignals.businessVintageMonths} months) and confirm intended working-capital end use of ${formatINR(recommendedLoanAmount || assessment.requestedLoan)}.`
+      `Verify physical shop continuity and confirm intended working-capital end use of ${formatINR(recommendedLoanAmount || assessment.requestedLoan)}.`
     );
   }
   if (verificationQuestions.length < 3) {
     verificationQuestions.push(
-      `Confirm that no informal hand-loans or off-book chit-fund obligations compete with the ${formatINR(assessment.estimatedMonthlyEmi)}/mo scheduled repayment.`
+      `Confirm that no informal hand-loans or off-book chit-fund obligations compete with the ${formatINR(assessment.estimatedMonthlyRepayment)}/mo scheduled repayment.`
     );
   }
 

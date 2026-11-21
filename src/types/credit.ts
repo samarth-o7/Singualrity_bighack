@@ -24,17 +24,15 @@ export type UnderwriterStatus =
   | 'Pre-Approved';
 
 /**
- * Tamper-resistant, system-fetched synthetic signals (Simulated RBI AA + BBPS + Udyam)
- * including cashDepositRegularity for cash-first MSMEs plus verified monthly cash flows.
+ * Tamper-resistant, system-fetched synthetic bank & UPI signals (Simulated RBI Account Aggregator):
+ * 4 core bank/UPI signals + cashDepositRegularity for cash-heavy profiles + verified monthly cash flows.
  */
 export interface VerifiedMSMESignals {
   uniqueUpiPayersPerMonth: number; // UPI Merchant payer diversity
   nachBounces6m: number; // Bank NACH / auto-debit bounces in last 6 months
   inflowOutflowCv: number; // Cash-flow coefficient of variation (e.g. 0.15 = 15%)
   minToAvgBalanceRatio: number; // Liquidity cushion: min / avg monthly balance (0.0 - 1.0)
-  bbpsOnTimeRate: number; // BBPS electricity / utility bill timeliness (0 - 100%)
   cashDepositRegularity: number; // Bank counter / CDM cash deposit consistency (0 - 100)
-  businessVintageMonths: number; // Udyam / GST operational vintage in months
   avgMonthlyInflow: number; // Verified average monthly inflow (₹)
   avgMonthlyOutflow: number; // Verified average monthly outflow (₹)
 }
@@ -43,7 +41,7 @@ export interface SyntheticMSMEProfile {
   id: ProfileId;
   label: string;
   businessName: string;
-  udyamId: string;
+  accountMask: string;
   location: string;
   sectorNote: string;
   aaSourceLabel: string;
@@ -54,10 +52,10 @@ export interface SyntheticMSMEProfile {
 export interface LoanApplication {
   id: string;
   referenceCode: string;
-  profileId: ProfileId;
+  profileId: ProfileId | 'borrower-personal';
   businessName: string;
   businessType: string;
-  udyamId: string;
+  accountMask: string;
   location: string;
   sectorNote: string;
   aaSourceLabel: string;
@@ -75,17 +73,10 @@ export interface StressTestScenario {
   inflowDipPercent: number; // 0 - 50%
   additionalNachBounces: number; // 0 - 4
   outflowShockPercent: number; // 0 - 35%
-  bbpsDropPoints: number; // 0 - 30 percentage points
 }
 
 export interface ScorecardPillar {
-  id:
-    | 'liquidity'
-    | 'discipline'
-    | 'diversity'
-    | 'cash-deposit'
-    | 'stability'
-    | 'vintage';
+  id: 'liquidity' | 'nach-discipline' | 'diversity' | 'cash-deposit' | 'stability';
   label: string;
   weightPercent: number;
   observedDisplay: string;
@@ -134,14 +125,6 @@ export interface BorrowerImprovementStep {
   targetMetric: string;
 }
 
-export interface BorrowerAiExplanation {
-  readinessSummary: string;
-  actionSteps: Array<{
-    title: string;
-    detail: string;
-  }>;
-}
-
 export interface LenderAiMemo {
   underwritingMemo: string;
   structuringMitigations: string[];
@@ -170,14 +153,14 @@ export interface CreditAssessment {
   knockOutTriggered: boolean;
   knockOutRules: KnockOutRuleResult[];
 
-  // Formula-Driven Fair Loan Terms
+  // Formula-Driven Fair Credit Terms
   recommendedLoanAmount: number;
   requestedLoan: number;
   loanCoverageRatio: number;
-  maxEmiRatioPercent: number; // 35-40% standard, lower under Watchlist/KO
-  maxSafeMonthlyEmi: number;
-  estimatedMonthlyEmi: number;
-  estimatedCycleInstallment: number;
+  maxRepaymentRatioPercent: number; // 35-40% standard, lower under Watchlist/KO
+  maxSafeMonthlyRepayment: number;
+  estimatedMonthlyRepayment: number;
+  periodicInstalment: number;
   tenureMonths: number;
   repaymentSchedule: RepaymentSchedule;
   repaymentRationale: string;
@@ -192,7 +175,7 @@ export interface CreditAssessment {
   borrowerImprovementSteps: BorrowerImprovementStep[];
   underwritingDecision:
     | 'Eligible — Standard AA Track'
-    | 'Eligible — Right-Sized by EMI Cap'
+    | 'Eligible — Right-Sized by Repayment Capacity'
     | 'Eligible — Starter Tranche Ladder'
     | 'Watchlist — Knock-Out Exposure Cap'
     | 'Watchlist — Starter Pilot Only'

@@ -3,12 +3,11 @@ import { BorrowerPortal } from './components/BorrowerPortal';
 import { Header } from './components/Header';
 import { LenderPortal } from './components/LenderPortal';
 import {
+  BORROWER_PERSONAL_ACCOUNT,
   INITIAL_LENDER_QUEUE,
-  SYNTHETIC_MSME_PROFILES,
 } from './data/msmeProfiles';
 import {
   LoanApplication,
-  ProfileId,
   RoleMode,
   UnderwriterStatus,
   ViewMode,
@@ -29,28 +28,18 @@ export default function App() {
   const [roleMode, setRoleMode] = useState<RoleMode>('borrower');
   const [viewMode, setViewMode] = useState<ViewMode>('desktop');
 
-  // Borrower Portal state: selected synthetic persona, requested loan amount, and revocable consent state
-  const [selectedProfileId, setSelectedProfileId] = useState<ProfileId>(
-    SYNTHETIC_MSME_PROFILES[0].id
-  );
+  // Borrower Portal state: strictly isolated single applicant account + loan amount + revocable AA consent
   const [requestedLoan, setRequestedLoan] = useState<number>(
-    SYNTHETIC_MSME_PROFILES[0].defaultRequestedLoan
+    BORROWER_PERSONAL_ACCOUNT.defaultRequestedLoan
   );
   const [consentGranted, setConsentGranted] = useState<boolean>(false);
 
-  // Lender Portal queue: 4 synthetic MSME profiles + any consented submission from Borrower Portal
+  // Lender Portal queue: all synthetic MSME profiles + borrower's consented request
   const [applications, setApplications] = useState<LoanApplication[]>(
     INITIAL_LENDER_QUEUE
   );
   const [selectedApplicationId, setSelectedApplicationId] = useState<string>(
     INITIAL_LENDER_QUEUE[0].id
-  );
-
-  const activeProfile = useMemo(
-    () =>
-      SYNTHETIC_MSME_PROFILES.find((p) => p.id === selectedProfileId) ??
-      SYNTHETIC_MSME_PROFILES[0],
-    [selectedProfileId]
   );
 
   const submittedBorrowerApp = useMemo(
@@ -64,10 +53,7 @@ export default function App() {
       submittedBorrowerApp.requestedLoan !== requestedLoan
   );
 
-  const upsertBorrowerApplication = (profileId: ProfileId, loanAmount: number) => {
-    const profile =
-      SYNTHETIC_MSME_PROFILES.find((p) => p.id === profileId) ??
-      SYNTHETIC_MSME_PROFILES[0];
+  const upsertBorrowerApplication = (loanAmount: number) => {
     const timestamp = `Today, ${formatCurrentTime()}`;
 
     setApplications((prev) => {
@@ -75,23 +61,18 @@ export default function App() {
       const record: LoanApplication = {
         id: BORROWER_CONSENT_APP_ID,
         referenceCode: BORROWER_CONSENT_REF,
-        profileId: profile.id,
-        businessName: profile.businessName,
-        businessType: profile.label,
-        udyamId: profile.udyamId,
-        location: profile.location,
-        sectorNote: profile.sectorNote,
-        aaSourceLabel: profile.aaSourceLabel,
+        profileId: 'borrower-personal',
+        businessName: BORROWER_PERSONAL_ACCOUNT.businessName,
+        businessType: BORROWER_PERSONAL_ACCOUNT.businessType,
+        accountMask: BORROWER_PERSONAL_ACCOUNT.accountMask,
+        location: BORROWER_PERSONAL_ACCOUNT.location,
+        sectorNote: BORROWER_PERSONAL_ACCOUNT.sectorNote,
+        aaSourceLabel: BORROWER_PERSONAL_ACCOUNT.aaSourceLabel,
         source: 'borrower-consent',
         consentGrantedAt: timestamp,
-        reviewStatus:
-          existing && existing.profileId === profile.id
-            ? existing.reviewStatus
-            : profile.signals.nachBounces6m > 2
-              ? 'Guardrail Hold'
-              : 'AA Verified',
+        reviewStatus: existing ? existing.reviewStatus : 'AA Verified',
         requestedLoan: loanAmount,
-        signals: { ...profile.signals },
+        signals: { ...BORROWER_PERSONAL_ACCOUNT.signals },
       };
 
       const others = prev.filter((app) => app.id !== BORROWER_CONSENT_APP_ID);
@@ -101,24 +82,14 @@ export default function App() {
     setSelectedApplicationId(BORROWER_CONSENT_APP_ID);
   };
 
-  const handleSelectProfile = (profileId: ProfileId) => {
-    const profile =
-      SYNTHETIC_MSME_PROFILES.find((p) => p.id === profileId) ??
-      SYNTHETIC_MSME_PROFILES[0];
-    setSelectedProfileId(profile.id);
-    setRequestedLoan(profile.defaultRequestedLoan);
-    // Switching persona requires fresh explicit read-only AA consent
-    setConsentGranted(false);
-  };
-
   const handleGrantConsent = () => {
     setConsentGranted(true);
-    upsertBorrowerApplication(activeProfile.id, requestedLoan);
+    upsertBorrowerApplication(requestedLoan);
   };
 
   const handleUpdateLoanRequest = () => {
     if (!consentGranted) return;
-    upsertBorrowerApplication(activeProfile.id, requestedLoan);
+    upsertBorrowerApplication(requestedLoan);
   };
 
   const handleRevokeConsent = () => {
@@ -143,14 +114,11 @@ export default function App() {
   const workspaceContent =
     roleMode === 'borrower' ? (
       <BorrowerPortal
-        profiles={SYNTHETIC_MSME_PROFILES}
-        selectedProfileId={selectedProfileId}
         requestedLoan={requestedLoan}
         consentGranted={consentGranted}
         submittedApplication={submittedBorrowerApp}
         hasLoanAmountChange={hasLoanAmountChange}
         isMobileFrame={isMobileFrame}
-        onSelectProfile={handleSelectProfile}
         onRequestedLoanChange={setRequestedLoan}
         onGrantConsent={handleGrantConsent}
         onUpdateLoanRequest={handleUpdateLoanRequest}

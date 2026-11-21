@@ -16,8 +16,7 @@ export function isStressActive(scenario: StressTestScenario): boolean {
   return (
     scenario.inflowDipPercent > 0 ||
     scenario.additionalNachBounces > 0 ||
-    scenario.outflowShockPercent > 0 ||
-    scenario.bbpsDropPoints > 0
+    scenario.outflowShockPercent > 0
   );
 }
 
@@ -139,7 +138,6 @@ export function StressTestPanel({
               inflowDipPercent: 25,
               additionalNachBounces: 2,
               outflowShockPercent: 10,
-              bbpsDropPoints: 10,
             })
           }
           className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
@@ -148,10 +146,10 @@ export function StressTestPanel({
         </button>
       </div>
 
-      {/* Fine-Grained Downside Sliders */}
+      {/* Fine-Grained Bank / Cash-Flow Downside Sliders */}
       <div
         className={`mt-4 grid gap-4 border-t border-slate-200 pt-4 ${
-          isMobileFrame ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'
+          isMobileFrame ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-3'
         }`}
       >
         <RangeNumberField
@@ -191,20 +189,6 @@ export function StressTestPanel({
           minLabel="0%"
           maxLabel="+35%"
           onChange={(v) => handleField('outflowShockPercent', v)}
-        />
-
-        <RangeNumberField
-          id="stress-bbps-drop"
-          label="BBPS utility timeliness drop"
-          value={scenario.bbpsDropPoints}
-          min={0}
-          max={30}
-          step={5}
-          prefix="-"
-          suffix="%"
-          minLabel="0%"
-          maxLabel="-30%"
-          onChange={(v) => handleField('bbpsDropPoints', v)}
         />
       </div>
 

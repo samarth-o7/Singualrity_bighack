@@ -27,27 +27,34 @@ export function CashFlowChart({
   const {
     effectiveSignals,
     monthlyNetSurplus,
-    maxSafeMonthlyEmi,
-    maxEmiRatioPercent,
-    estimatedMonthlyEmi,
+    maxSafeMonthlyRepayment,
+    maxRepaymentRatioPercent,
+    estimatedMonthlyRepayment,
+    periodicInstalment,
+    repaymentSchedule,
   } = assessment;
 
   const baseSignals = baselineAssessment?.effectiveSignals;
   const baseSurplus = baselineAssessment?.monthlyNetSurplus;
-  const baseSafeEmi = baselineAssessment?.maxSafeMonthlyEmi;
+  const baseSafeRepayment = baselineAssessment?.maxSafeMonthlyRepayment;
 
-  // Compute unified scale across current and baseline figures so stress contractions are visually proportional
   const maxScale = Math.max(
     10000,
     effectiveSignals.avgMonthlyInflow,
     effectiveSignals.avgMonthlyOutflow,
     Math.abs(monthlyNetSurplus),
-    maxSafeMonthlyEmi,
+    maxSafeMonthlyRepayment,
     baseSignals?.avgMonthlyInflow ?? 0,
     baseSignals?.avgMonthlyOutflow ?? 0
   );
 
   const isDeficit = monthlyNetSurplus < 0;
+  const cycleUnit =
+    repaymentSchedule === 'Daily'
+      ? 'day'
+      : repaymentSchedule === 'Weekly'
+        ? 'wk'
+        : 'mo';
 
   const rows: BarRow[] = [
     {
@@ -62,7 +69,7 @@ export function CashFlowChart({
     {
       id: 'outflow',
       label: 'Verified Avg Monthly Outflow',
-      sublabel: 'Operating debits & bills',
+      sublabel: 'Operating debits',
       value: effectiveSignals.avgMonthlyOutflow,
       baselineValue: isStressed ? baseSignals?.avgMonthlyOutflow : undefined,
       barColor: 'bg-slate-500',
@@ -78,18 +85,19 @@ export function CashFlowChart({
       valueColor: isDeficit ? 'text-red-700' : 'text-emerald-700',
     },
     {
-      id: 'safe-emi',
-      label: `Safe EMI Cap (${maxEmiRatioPercent}% of Surplus)`,
+      id: 'safe-repayment',
+      label: `Safe Repayment Capacity (${maxRepaymentRatioPercent}% of Surplus)`,
       sublabel:
-        estimatedMonthlyEmi > 0
-          ? `Est. EMI: ${formatINR(estimatedMonthlyEmi)}/mo`
-          : 'No eligible monthly EMI',
-      value: maxSafeMonthlyEmi,
-      baselineValue: isStressed ? baseSafeEmi : undefined,
+        estimatedMonthlyRepayment > 0
+          ? `Periodic Instalment: ${formatINR(periodicInstalment)}/${cycleUnit} (${formatINR(estimatedMonthlyRepayment)}/mo)`
+          : 'No eligible repayment capacity',
+      value: maxSafeMonthlyRepayment,
+      baselineValue: isStressed ? baseSafeRepayment : undefined,
       barColor: 'bg-amber-600',
       valueColor: 'text-amber-800',
-      secondaryMarkerValue: estimatedMonthlyEmi > 0 ? estimatedMonthlyEmi : undefined,
-      secondaryMarkerLabel: `Est. EMI ${formatINR(estimatedMonthlyEmi)}`,
+      secondaryMarkerValue:
+        estimatedMonthlyRepayment > 0 ? estimatedMonthlyRepayment : undefined,
+      secondaryMarkerLabel: `Est. Monthly Repayment ${formatINR(estimatedMonthlyRepayment)}`,
     },
   ];
 
@@ -98,10 +106,10 @@ export function CashFlowChart({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h3 id="cashflow-chart-heading" className="text-sm font-semibold text-slate-900">
-            Cash-Flow & Repayment Capacity
+            Cash-Flow &amp; Repayment Capacity
           </h3>
           <p className="text-xs text-slate-500">
-            Verified monthly inflow, outflow, net surplus, and deterministic EMI ceiling
+            Verified monthly inflow, outflow, net surplus, and deterministic Safe Repayment Capacity
           </p>
         </div>
         {isStressed && (
@@ -124,8 +132,7 @@ export function CashFlowChart({
               ? Math.min(100, Math.max(0, (row.secondaryMarkerValue / maxScale) * 100))
               : null;
 
-          const delta =
-            row.baselineValue !== undefined ? row.value - row.baselineValue : 0;
+          const delta = row.baselineValue !== undefined ? row.value - row.baselineValue : 0;
 
           return (
             <div key={row.id} className="space-y-1.5">
@@ -149,13 +156,11 @@ export function CashFlowChart({
               </div>
 
               <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-100">
-                {/* Active Value Bar */}
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${row.barColor}`}
                   style={{ width: `${widthPct}%` }}
                 />
 
-                {/* Actual Estimated EMI marker inside Safe EMI Cap bar */}
                 {markerPct !== null && markerPct > 0 && (
                   <div
                     className="pointer-events-none absolute inset-y-0 w-0.5 bg-slate-900"
@@ -164,7 +169,6 @@ export function CashFlowChart({
                   />
                 )}
 
-                {/* Baseline ghost tick during Lender Stress-Test */}
                 {basePct !== null && Math.abs(basePct - widthPct) >= 1 && (
                   <div
                     className="pointer-events-none absolute inset-y-0 w-0.5 border-r-2 border-dashed border-slate-700/70"
@@ -178,7 +182,6 @@ export function CashFlowChart({
         })}
       </div>
 
-      {/* Concise Legend */}
       <div className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-100 pt-2.5 text-[11px] text-slate-500">
         <span className="inline-flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-xs bg-teal-700" aria-hidden="true" />
@@ -194,12 +197,12 @@ export function CashFlowChart({
         </span>
         <span className="inline-flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-xs bg-amber-600" aria-hidden="true" />
-          Safe EMI Cap
+          Safe Repayment Capacity
         </span>
-        {estimatedMonthlyEmi > 0 && (
+        {estimatedMonthlyRepayment > 0 && (
           <span className="inline-flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-0.5 bg-slate-900" aria-hidden="true" />
-            Est. EMI ({formatINR(estimatedMonthlyEmi)}/mo)
+            Est. Monthly Repayment ({formatINR(estimatedMonthlyRepayment)}/mo)
           </span>
         )}
       </div>
